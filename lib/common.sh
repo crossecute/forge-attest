@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# common.sh — logging helpers and a tiny flat-TOML reader for forge-attest.
+# common.sh: logging helpers and a tiny flat-TOML reader for forge-attest.
 
 # --- pretty logging (no color when not a tty) ---------------------------------
 if [[ -t 1 ]]; then

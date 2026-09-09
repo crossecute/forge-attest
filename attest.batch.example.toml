@@ -1,4 +1,4 @@
-# forge-attest — attesting a Safe{Wallet} Transaction Builder batch
+# forge-attest: attesting a Safe{Wallet} Transaction Builder batch
 #
 # A worked example for the shape emitted by FraxFinance's `SafeTxHelper.writeTxs`
 # and by the Safe UI's "export batch". Copy it, fill in the four pinned values,
@@ -8,7 +8,7 @@
 #
 # The difference from a flat SafeTx claim is that a batch carries no Safe address,
 # no nonce and no gas fields. Those are supplied here, and they are *inputs to the
-# hash* — the same batch signs as a different transaction on a different Safe or
+# hash*. The same batch signs as a different transaction on a different Safe, or
 # at a different nonce. Getting them wrong produces a hash mismatch, not a silent
 # pass.
 
@@ -41,7 +41,7 @@ refund_receiver = "0x0000000000000000000000000000000000000000"
 
 # --- Pinned expectations ----------------------------------------------------------
 # `SafeTxHelper` stamps `createdAt` with `block.timestamp * 1000`, so the raw bytes
-# differ on every run and a byte-exact sha256 is not pinnable — leave
+# differ on every run and a byte-exact sha256 cannot be pinned. Leave
 # expected_output_sha256 blank and pin the canonical digest instead. It is computed
 # from the normalised SafeTx and is unaffected by timestamps, key order, address
 # checksum casing or string-vs-number scalars.
@@ -59,7 +59,7 @@ safe_address = "0x111CEEee040739fD91D29C34C33E6B3E112F2177"
 safe_nonce   = "43"
 
 # --- Nested Safe (optional) -------------------------------------------------------
-# When the Safe above is owned by other Safes, a child cannot sign — it approves
+# When the Safe above is owned by other Safes, a child cannot sign. It approves
 # on-chain by calling `safe_address.approveHash(<the hash derived above>)`. That
 # approval is a Safe transaction in its own right, and it is the one the child's
 # owners actually sign.

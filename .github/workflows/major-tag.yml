@@ -6,7 +6,7 @@ name: major-tag
 # The alias must never have a GitHub release attached to it. Release
 # immutability is enabled on this repository: publishing a release locks its
 # tag to a commit permanently, and a locked v1 can no longer be moved or
-# deleted while that release exists. That is unrecoverable — it would mean
+# deleted while that release exists. That cannot be undone. It would mean
 # abandoning v1 and migrating every consumer. Hence this workflow only ever
 # moves a bare ref, and refuses any tag that is not vX.Y.Z (see the guard
 # below, which is what stops a release published on v1 from moving v1).
@@ -29,15 +29,15 @@ jobs:
         env:
           # Passed through env rather than interpolated into the script. A tag
           # name is repository content, and `${{ }}` splices it into the shell
-          # before bash ever sees it — the standard injection path.
+          # before bash ever sees it, which is the standard injection path.
           TAG: ${{ github.event.release.tag_name }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Only ever move an alias for a real version tag. Anything else —
-          # including "v1" itself — is left untouched.
+          # Only ever move an alias for a real version tag. Anything else is
+          # left untouched, including "v1" itself.
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::notice::$TAG is not a vX.Y.Z tag; leaving the alias alone"
             exit 0
@@ -47,7 +47,7 @@ jobs:
 
           # Resolve the commit the *release tag* names, not github.sha. On a
           # release event github.sha can be the default branch tip, which may
-          # carry commits made after the tag — moving the alias there would
+          # carry commits made after the tag. Moving the alias there would
           # publish unreleased code to everyone pinning @v1.
           ref=$(gh api "repos/$REPO/git/ref/tags/$TAG")
           sha=$(jq -r '.object.sha' <<<"$ref")

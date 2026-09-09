@@ -7,7 +7,7 @@
 - **Pinned commit:** `e3be687a24af013d455b99d1fcacc5c252e2f1e8`
 - **sha256:** `15705ee9a702835b070f5a8cb3bb3c494c0ff091a775fc53f2dbe50c3af62759`
 - **Fetched:** 2026-07-27
-- **Licence:** AGPL-3.0-only — [`LICENSE-AGPL-3.0.txt`](LICENSE-AGPL-3.0.txt)
+- **Licence:** AGPL-3.0-only. See [`LICENSE-AGPL-3.0.txt`](LICENSE-AGPL-3.0.txt)
 
 The rest of this repository is MIT. The MIT grant does **not** extend to this
 file: it is redistributed verbatim under AGPL-3.0-only with its author and
@@ -34,7 +34,7 @@ the transaction hash. A wrong entry here produces a confidently wrong answer.
 ## Why the checksums
 
 Committing these files already pins them for anyone consuming forge-attest at a
-commit — the checksums are maintainer-side. They exist so that a change to a
+commit, so the checksums are maintainer-side. They exist so that a change to a
 file that feeds the hash derivation cannot land as an unreviewed diff or a bad
 merge without `test/shell/run.sh` objecting. Update them deliberately, in the
 same commit as the file.

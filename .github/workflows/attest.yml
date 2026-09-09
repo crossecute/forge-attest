@@ -1,7 +1,7 @@
 name: attest
 
 # Continuous attestation. Because the whole pipeline is deterministic, every run
-# re-proves — publicly and with a timestamp — that the Safe transaction pinned in
+# re-proves, publicly and with a timestamp, that the Safe transaction pinned in
 # attest.toml is exactly the output of the pinned producer commit. A green run is
 # the artifact a third party can trust without re-running anything themselves.
 

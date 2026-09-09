@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-/// @dev Inline cheatcode surface — forge-attest's verifier has no Solidity
-///      dependencies (no forge-std, nothing to `forge install`, nothing to drift).
+/// @dev Inline cheatcode surface. forge-attest's verifier has no Solidity
+///      dependencies: no forge-std, nothing to `forge install`, nothing to drift.
 interface Vm {
     function envString(string calldata name) external view returns (string memory);
     function envOr(string calldata name, string calldata defaultValue) external view returns (string memory);
@@ -25,8 +25,8 @@ interface Vm {
 /// @title SafeTxLib
 /// @notice Solidity model of a Gnosis Safe transaction, plus readers for every
 ///         JSON shape forge-attest accepts. This is the *second, independent*
-///         implementation of the hash derivation — `lib/derive.sh` computes the
-///         same values with `cast`, and the two are compared on every run so no
+///         implementation of the hash derivation. `lib/derive.sh` computes the
+///         same values with `cast`, and the two are compared on every run, so no
 ///         single implementation is trusted.
 ///
 ///         Targets Safe >= 1.3.0 (chainId in the EIP-712 domain, `baseGas` field
@@ -56,7 +56,8 @@ library SafeTxLib {
     ///      from safe-global/safe-deployments. Shared with lib/normalize.sh.
     string internal constant EXCEPTIONS_PATH = "lib/multisend-exceptions.json";
 
-    /// @notice The full EIP-712 SafeTx field set — forge-attest's canonical form.
+    /// @notice The full EIP-712 SafeTx field set, which is forge-attest's
+    ///         canonical form.
     struct SafeTx {
         address safe;
         uint256 chainId;
@@ -83,7 +84,7 @@ library SafeTxLib {
 
     /// @dev `approveHash(bytes32)`. A Safe that owns another Safe cannot sign, so
     ///      it approves on-chain instead. The call stores a flag against
-    ///      (owner, hash) and never learns the preimage — at execution the full
+    ///      (owner, hash) and never learns the preimage. At execution the full
     ///      transaction is supplied again and re-hashed. Nothing on-chain can tell
     ///      a signer what they approved, which is why the parent's decoded intent
     ///      has to travel alongside.
@@ -91,9 +92,9 @@ library SafeTxLib {
 
     /// @notice What a batch cannot tell us and the config must supply.
     /// @dev The gas/refund fields are here because a batch format never carries
-    ///      them. They are almost always zero — that is what the Safe UI submits —
-    ///      but they are inputs to the hash, so a config that sets them has to
-    ///      reach this side too or the two derivations silently disagree.
+    ///      them. They are almost always zero, which is what the Safe UI submits.
+    ///      They are still inputs to the hash, so a config that sets them has to
+    ///      reach this side too, or the two derivations silently disagree.
     struct Binding {
         address safe;
         uint256 nonce;
@@ -156,7 +157,7 @@ library SafeTxLib {
         return abi.encodeWithSignature("multiSend(bytes)", encodeMultiSendPayload(txs));
     }
 
-    /// @notice Fold a batch into the single SafeTx its owners sign — mirroring
+    /// @notice Fold a batch into the single SafeTx its owners sign. This does
     ///         what Safe{Wallet} does when it submits a Transaction Builder batch.
     function toSafeTx(InnerTx[] memory txs, Binding memory b, uint256 jsonChainId)
         internal
@@ -208,8 +209,8 @@ library SafeTxLib {
     // ------------------------------------------------------------ nested Safes
 
     /// @notice The transaction a child Safe sends to approve `parentHash` on the
-    ///         parent Safe it owns. Every field is determined by the arguments —
-    ///         there is nothing for a producer script to choose, so this is
+    ///         parent Safe it owns. Every field is determined by the arguments.
+    ///         There is nothing for a producer script to choose, so this is
     ///         constructed rather than read from an artifact.
     function approvalTx(
         address parentSafe,
@@ -281,7 +282,7 @@ library SafeTxLib {
 
     /// @notice Read a Safe{Wallet} Transaction Builder batch (`.transactions`) or
     ///         a bare JSON array of the same entries.
-    /// @dev Scalars may be JSON numbers or quoted strings — producers differ, and
+    /// @dev Scalars may be JSON numbers or quoted strings. Producers differ, and
     ///      `parseJsonUint` accepts both. `operation` defaults to 0 (CALL).
     function readBatch(string memory json) internal view returns (InnerTx[] memory txs) {
         string memory base = vm.keyExistsJson(json, ".transactions[0].to") ? ".transactions" : "";
@@ -351,9 +352,9 @@ library SafeTxLib {
 
     /// @dev `data` is routinely absent or explicitly `null` for plain value
     ///      transfers, which `parseJsonBytes` refuses outright. Only that case may
-    ///      become empty calldata: a value that is present but not valid hex — say
-    ///      `"0x1"` — is a producer bug, and silently hashing it as empty would
-    ///      attest a transaction nobody wrote. A JSON null reads back as the
+    ///      become empty calldata. A value that is present but not valid hex,
+    ///      say `"0x1"`, is a producer bug, and silently hashing it as empty
+    ///      would attest a transaction nobody wrote. A JSON null reads back as the
     ///      literal string "null", which is what separates the two.
     function _optionalBytes(string memory json, string memory key) private view returns (bytes memory) {
         if (!vm.keyExistsJson(json, key)) return "";
@@ -387,7 +388,7 @@ library SafeTxLib {
     /// @notice The canonical MultiSendCallOnly for a Safe version.
     /// @dev Only versions whose deployment address we actually know are mapped.
     ///      Guessing for an unknown version would silently produce a `to` the Safe
-    ///      never uses — a wrong hash that looks authoritative. Refuse instead and
+    ///      never uses, a wrong hash that looks authoritative. Refuse instead and
     ///      make the caller name the address. `lib/normalize.sh` implements exactly
     ///      this mapping; the two must not drift, or the independent derivations
     ///      stop being a check on each other.
@@ -405,7 +406,7 @@ library SafeTxLib {
             revert("SafeTxLib: no known MultiSendCallOnly for this Safe version, set multisend_address");
         }
 
-        // The canonical address is not universal — see lib/multisend-exceptions.json.
+        // The canonical address is not universal. See lib/multisend-exceptions.json.
         // Both implementations read that one file so they cannot drift apart. No
         // try/catch: a missing file or key means the guard is not running, which
         // must be loud rather than quietly skipped.

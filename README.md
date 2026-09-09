@@ -3,13 +3,13 @@
 [![attest](https://github.com/crossecute/forge-attest/actions/workflows/attest.yml/badge.svg)](https://github.com/crossecute/forge-attest/actions/workflows/attest.yml)
 
 **Prove that a Gnosis Safe transaction is exactly the output of a specific Forge
-script — and was not manipulated on its way to the Safe.**
+script, and was not changed on its way to the Safe.**
 
-When an ops/treasury team builds a Safe transaction with a Forge script in one repo
-and then submits the resulting JSON to a Safe for signers to approve, a gap opens up:
-*how does a signer know the thing in the Safe queue is really what the script
-produced, and not something edited in between?* `forge-attest` closes that gap by
-re-deriving everything from a pinned commit and comparing hashes, using
+An ops or treasury team builds a Safe transaction with a Forge script in one repo,
+then submits the resulting JSON to a Safe for signers to approve. That leaves a
+question no signer can answer: *is the thing in the Safe queue really what the
+script produced, or was it edited in between?* `forge-attest` answers it by
+re-deriving everything from a pinned commit and comparing hashes. It uses
 [`safe-tx-hashes-util`](https://github.com/pcaversaccio/safe-tx-hashes-util) for the
 live comparison.
 
@@ -19,21 +19,21 @@ live comparison.
 
 ## How it proves it
 
-Given a claim in [`attest.toml`](attest.toml) — a producer repo, a pinned commit, the
-script it runs, and the exact outputs that commit must produce — `./attest.sh` runs
-five layered, independent checks:
+A claim in [`attest.toml`](attest.toml) names a producer repo, a pinned commit, the
+script it runs, and the exact outputs that commit must produce. Given one,
+`./attest.sh` runs five independent checks, each layered on the last:
 
 | # | Check | Answers | How |
 |---|-------|---------|-----|
 | 1 | **Source integrity** | Is this the genuine, unmodified output of *that* script version? | Clone the producer at the pinned commit, re-run its Forge script, and assert the emitted JSON's `sha256` equals the pinned value. |
-| 2 | **Canonical integrity** | Does it describe the same transaction, whatever the producer's formatting? | Fold the JSON into one canonical `SafeTx` and assert *its* `sha256` matches. Stable across timestamps, key order and hex casing — the pin to use when a producer isn't byte-deterministic. |
+| 2 | **Canonical integrity** | Does it describe the same transaction, whatever the producer's formatting? | Fold the JSON into one canonical `SafeTx` and assert *its* `sha256` matches. Stable across timestamps, key order and hex casing. Use this pin when a producer does not emit the same bytes every run. |
 | 3 | **Hash derivation (cast)** | Does that map to exactly one Safe tx? | Recompute the EIP-712 `safeTxHash` from the canonical form with `cast`; assert it equals the pinned `expected_safe_tx_hash`. |
-| 4 | **Hash cross-check (Solidity)** | Is the derivation itself trustworthy? | A `forge test` re-reads the *producer's* JSON, redoes the folding and recomputes the same hash in Solidity, asserting it agrees with #3 and the pinned value — so no single implementation is trusted, and normalisation itself is covered. |
+| 4 | **Hash cross-check (Solidity)** | Is the derivation itself trustworthy? | A `forge test` re-reads the *producer's* JSON, redoes the folding and recomputes the same hash in Solidity, asserting it agrees with #3 and the pinned value. No single implementation is trusted, and normalisation itself is covered. |
 | 5 | **Live integrity** | Is the tx *actually queued in the Safe* the same one? | Run `safe-tx-hashes-util` against the Safe Transaction Service (`--network --address --nonce`) and assert the queued tx's hash equals the script-derived hash. |
 
 If all active checks pass, the submitted Safe tx is provably the script's output. If
-anything was changed — the script, the JSON, or the queued tx — at least one hash
-diverges and the run prints **`NOT ATTESTED`** and exits non-zero.
+anything was changed (the script, the JSON, or the queued tx) at least one hash
+diverges. The run then prints **`NOT ATTESTED`** and exits non-zero.
 
 ## Usage
 
@@ -78,8 +78,8 @@ caller gets both without scraping colours:
 }
 ```
 
-A hash that was skipped rather than computed is `""` — an empty `safe_tx_live`
-means the live check did not run, not that it passed. `nested` is `null` unless
+A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` means
+the live check did not run, not that it passed. `nested` is `null` unless
 the claim names a child Safe. `failures` lists exactly what a `NOT ATTESTED`
 verdict is based on.
 
@@ -100,31 +100,31 @@ verdict to the job summary, and exposes `attested`, `safe-tx-hash`,
 `canonical-sha256`, `child-safe-tx-hash`, and the full `json` document as step
 outputs. Put `attest.toml` in your own ops repo and point `producer_repo` at it.
 
-**Pin the action to a commit SHA, not a tag.** A tag is mutable, and whoever can
-move it decides what "verified" means in your pipeline — which is the property
+**Pin the action to a commit SHA, not a tag.** A tag can be moved, so whoever can
+move it decides what "verified" means in your pipeline. That is the exact property
 this tool exists to remove. Pinning a SHA fixes the action, `attest.sh`, `lib/`,
-and the Solidity cross-check together, because they are all this one repository
-at one commit. `foundry-version` matters for the same reason — `forge` re-runs
-the producer's script, so a moving toolchain can move the output bytes — which
-is why it defaults to a pinned release rather than `stable`. Override it
-deliberately, and bump it as a reviewed change.
+and the Solidity cross-check together, because they are all this one repository at
+one commit. `foundry-version` matters for the same reason: `forge` re-runs the
+producer's script, so a moving toolchain can move the output bytes. That is why it
+defaults to a pinned release rather than `stable`. Override it deliberately, and
+bump it as a reviewed change.
 
-That argument binds us too, so the action pins its own dependencies by commit
-SHA rather than by tag. Otherwise whoever could move a tag we referenced would
-get code execution inside the verification step of every pipeline using this
-action — the one step whose output everyone downstream is trusting.
+That argument binds us too, so the action pins its own dependencies by commit SHA
+rather than by tag. Otherwise whoever could move a tag we referenced would get code
+execution inside the verification step of every pipeline using this action. That is
+the one step whose output everyone downstream is trusting.
 
-A pin nobody moves is its own problem, though: it freezes the repo on whatever
-was current the day it was written, missing exactly the security fixes that made
-pinning worth doing. [`.github/dependabot.yml`](.github/dependabot.yml) proposes
-the bumps; review decides; the pin stays a SHA.
+A pin nobody moves has its own problem. It freezes the repo on whatever was current
+the day it was written, and misses exactly the security fixes that made pinning
+worth doing. [`.github/dependabot.yml`](.github/dependabot.yml) proposes the bumps,
+review decides, and the pin stays a SHA.
 
 ## Supported producer formats
 
-`forge-attest` takes whatever Safe JSON your ops repo already emits — the format is
-detected automatically (or named explicitly with `input_format`).
+`forge-attest` takes whatever Safe JSON your ops repo already emits. It detects the
+format automatically, or you name it with `input_format`.
 
-### `safe-tx` — a complete transaction
+### `safe-tx`: a complete transaction
 
 A flat object carrying the full EIP-712 `SafeTx` field set. All scalars are quoted
 strings so large integers survive JSON:
@@ -140,7 +140,7 @@ strings so large integers survive JSON:
 }
 ```
 
-### `tx-builder` — a Safe{Wallet} Transaction Builder batch
+### `tx-builder`: a Safe{Wallet} Transaction Builder batch
 
 The shape produced by the Safe UI's "export batch" and by FraxFinance's
 [`SafeTxHelper.writeTxs`](https://github.com/FraxFinance/frax-standard-solidity/blob/master/src/SafeTxHelper.sol):
@@ -157,7 +157,7 @@ The shape produced by the Safe UI's "export batch" and by FraxFinance's
 }
 ```
 
-### `tx-array` — a bare array
+### `tx-array`: a bare array
 
 Just the `transactions` list, with no envelope. `chain_id` then has to come from the
 config.
@@ -169,28 +169,29 @@ transaction.** It becomes one only when bound to a specific Safe at a specific n
 and folded into the single call owners actually sign:
 
 - **more than one transaction** → packed into `multiSend(bytes)` and executed as a
-  `DELEGATECALL` into `MultiSendCallOnly`, exactly as Safe{Wallet} submits it;
-- **exactly one transaction** → sent directly to its target, also matching the UI
-  (override with `batch_mode = "multisend"`).
+  `DELEGATECALL` into `MultiSendCallOnly`, exactly as Safe{Wallet} submits it.
+- **exactly one transaction** → sent directly to its target, also matching the UI.
+  Override with `batch_mode = "multisend"`.
 
 So `safe_address` and `safe_nonce` in `attest.toml` are *inputs to the hash* for
 batch formats, not just live-check settings. The same batch on a different Safe, or
 at a different nonce, is a different transaction and will not match a pin.
 
-The schema does have a slot for the Safe — `meta.createdFromSafeAddress` — and
+The schema does have a slot for the Safe, `meta.createdFromSafeAddress`, and
 `forge-attest` reads it. A producer that fills it in makes the file self-binding, so
-`safe_address` becomes an independent cross-check rather than a required input; if
-the two disagree, that is a tampering signal and the run fails rather than picking
+`safe_address` becomes an independent cross-check rather than a required input. If
+the two disagree, that is a tampering signal, and the run fails rather than picking
 one. Nothing carries the nonce, so that always comes from the config.
 
 The default `MultiSendCallOnly` is the canonical deployment for the configured
-`safe_version` — 1.3.x, 1.4.x and 1.5.x are known; any other version must name
-`multisend_address`.
+`safe_version`. Versions 1.3.x, 1.4.x and 1.5.x are known. Any other version must
+name `multisend_address`.
 
 That default is **not** universal across chains. On some chains the canonical
-address isn't deployed at all, and on the zkSync-family chains (zkSync Era, Abstract,
-…) a different-bytecode deployment is the one Safe{Wallet} actually uses. Rather than
-guess, `forge-attest` refuses on those chains and asks for `multisend_address`:
+address is not deployed at all. On the zkSync-family chains (zkSync Era, Abstract,
+and others) a deployment with different bytecode is the one Safe{Wallet} actually
+uses. Rather than guess, `forge-attest` refuses on those chains and asks for
+`multisend_address`:
 
 ```
 normalize.sh: chain 324 does not use the canonical MultiSendCallOnly for Safe 1.3.0;
@@ -202,13 +203,13 @@ normalize.sh: chain 324 does not use the canonical MultiSendCallOnly for Safe 1.
 read by *both* derivations, so the two cannot drift. Safe 1.5.0 has no divergent
 chains; 1.4.1 has 7; 1.3.0 has 112.
 
-Batches are also where the byte-exact `sha256` stops being usable: `SafeTxHelper`
+Batches are also where the byte-exact `sha256` stops being usable. `SafeTxHelper`
 stamps `createdAt` with `block.timestamp * 1000`, so the file's bytes change on every
 run. Leave `expected_output_sha256` blank for such producers and pin
-`expected_canonical_sha256` instead — the canonical form has a fixed key order,
-quoted scalars and lowercase hex, so timestamps, `meta`, key reordering, address
-checksum casing and string-vs-number scalars cannot move it, while anything the Safe
-would actually execute does.
+`expected_canonical_sha256` instead. The canonical form has a fixed key order,
+quoted scalars and lowercase hex. Timestamps, `meta`, key reordering, address
+checksum casing, and string-versus-number scalars therefore cannot move it, while
+anything the Safe would actually execute does.
 
 You can run the normaliser on its own to see what a given file folds into:
 
@@ -226,19 +227,19 @@ You can run the normaliser on its own to see what a given file folds into:
   delegatecalls, so the batch could never execute. Pass the plain MultiSend via
   `multisend_address` if you really mean it.
 - **A config value that contradicts the JSON.** If both carry a `chainId` and they
-  disagree, that is a tampering signal — it errors rather than silently picking one.
+  disagree, that is a tampering signal. It errors rather than silently picking one.
 
 ## Nested Safes
 
-When a Safe is owned by other Safes, a child cannot sign — it approves on-chain by
+When a Safe is owned by other Safes, a child cannot sign. It approves on-chain by
 calling `parent.approveHash(h)`, where `h` is the parent's transaction hash. That
 approval is a Safe transaction in its own right, and it is the one the child's owners
 actually sign. They never sign the parent transaction.
 
 They also cannot see it. `approveHash` stores a flag against `(owner, hash)` and never
-learns the preimage; at execution the full transaction is supplied again and re-hashed.
-So no on-chain state can tell a signer what `0xd4d9bdcd6dadc73a…` means — the preimage
-exists only in the producer's artifact. That is the gap this closes.
+learns the preimage. At execution the full transaction is supplied again and re-hashed.
+So no on-chain state can tell a signer what `0xd4d9bdcd6dadc73a…` means. The preimage
+exists only in the producer's artifact. That is what this closes.
 
 Add to any claim:
 
@@ -251,8 +252,8 @@ expected_child_safe_tx_hash = ""
 
 There is no artifact for the approval and no producer script writes one. Given the
 parent Safe, the parent hash, the child Safe and the child's nonce, every field is
-determined, so `forge-attest` constructs it — in bash and in Solidity independently,
-and compares them as it does every other hash:
+determined, so `forge-attest` constructs it. It does so in bash and in Solidity
+independently, and compares the two as it does every other hash:
 
 ```
 ==> Nested approval (child Safe)
@@ -267,15 +268,19 @@ and compares them as it does every other hash:
 ```
 
 That last line is the part to read carefully. The parent hash binds the parent's
-nonce, so if the parent executes anything else first, every stored approval silently
-stops matching and execution fails as `GS025` — "invalid owner" — with nothing in the
+nonce. If the parent executes anything else first, every stored approval silently
+stops matching, and execution fails as `GS025`, "invalid owner", with nothing in the
 error pointing at the real cause.
 
-**Out of scope.** Whether enough children approved (`approveHash` reverts with `GS030`
-unless the caller is already an owner, so a mis-aimed approval cannot silently count —
-but the tool does not tally against the threshold); nesting more than one level deep;
-EIP-1271 contract signatures, which produce a signature blob rather than a reviewable
-transaction; and several different transactions queued at the same nonce.
+**Out of scope:**
+
+- Whether enough children approved. `approveHash` reverts with `GS030` unless the
+  caller is already an owner, so a mis-aimed approval cannot silently count, but the
+  tool does not tally approvals against the threshold.
+- Nesting more than one level deep.
+- EIP-1271 contract signatures, which produce a signature blob rather than a
+  reviewable transaction.
+- Several different transactions queued at the same nonce.
 
 ## Pointing it at your own repo
 
@@ -296,8 +301,8 @@ safe_address = "0x<your safe>"
 safe_nonce   = "<nonce>"
 ```
 
-To get the pinned values the first time, run once with them blank — the orchestrator
-prints every hash it computes, which you then paste back in as the expectation *after
+To get the pinned values the first time, run once with them blank. The orchestrator
+prints every hash it computes. Paste those back in as the expectation *after
 reviewing the transaction*. See
 [`attest.batch.example.toml`](attest.batch.example.toml) for a fully commented batch
 claim.
@@ -314,29 +319,29 @@ claim.
 - The batch was re-bound to a different Safe, nonce or chain → different hash.
 - The tx queued in the Safe differs from the script output → live hash mismatch
   (check #5).
-- A nested approval pointing at a different transaction than the one under review —
-  the approval is re-derived from the parent, never read back from it.
+- A nested approval pointing at a different transaction than the one under review.
+  The approval is re-derived from the parent, never read back from it.
 
 **Trusts, and why that is safe**
 - The Safe Transaction Service (check #5) is queried over the network, but a
   compromised or impersonated service can only cause a false *negative*. The
   comparison is against a hash this tool derived offline from the script's own
-  output, so producing a false *positive* means returning exactly that hash —
-  which requires already knowing the honest answer, and gains an attacker
-  nothing. Treat an unreachable service as an unknown, not as a pass: that is
-  what `--require-live` is for.
+  output. Producing a false *positive* means returning exactly that hash, which
+  requires already knowing the honest answer and gains an attacker nothing. Treat
+  an unreachable service as an unknown, not as a pass. That is what
+  `--require-live` is for.
 - The four offline checks need no network at all beyond cloning the pinned
   producer commit, whose SHA is verified after checkout.
 
 **Does not catch (out of scope)**
-- Whether the script's *intent* is correct — `forge-attest` proves provenance, not
+- Whether the script's *intent* is correct. `forge-attest` proves provenance, not
   that the transaction does what you want. Review the script.
-- A malicious producer commit that you then pin — you are attesting to a specific
-  commit; pin one you have reviewed.
+- A malicious producer commit that you then pin. You are attesting to a specific
+  commit, so pin one you have reviewed.
 - Safe contract versions `< 1.3.0` in the offline deriver (checks #3/#4). The live
   check (#5) still handles them via `safe-tx-hashes-util`.
-- Batch entries expressed as `contractMethod` + inputs with no encoded calldata —
-  refused rather than guessed at.
+- Batch entries expressed as `contractMethod` plus inputs with no encoded calldata.
+  These are refused rather than guessed at.
 - Whether a nested approval will still be valid when it executes. The parent's nonce
   can move at any time, and only the live check can notice.
 - A SHA-1 collision on `producer_commit`. The checkout is verified against the
@@ -348,8 +353,9 @@ claim.
 ### Running this is running the config's code
 
 `producer_setup` is executed with `bash -c`, and `forge script` runs the producer's
-Solidity. Both are the point — the tool cannot reproduce a build without running it
-— but it means **whoever can edit `attest.toml` can execute code on the runner.**
+Solidity. Both are the point, because the tool cannot reproduce a build without
+running it. It does mean **whoever can edit `attest.toml` can execute code on the
+runner.**
 
 In your own CI that is usually fine: the config is in your repo, behind review. Two
 cases deserve care.
@@ -357,7 +363,7 @@ cases deserve care.
 - **Fork pull requests.** With the standard `pull_request` trigger, a fork PR that
   edits `attest.toml` gets code execution in your CI. GitHub runs it with a
   read-only token and no access to secrets, so this is the ordinary "CI builds
-  untrusted code" situation — acceptable, worth knowing.
+  untrusted code" situation. It is acceptable, but worth knowing.
 - **Never use `pull_request_target`.** It runs with the base repo's secrets and a
   writable token, against the *fork's* files. Combined with `producer_setup` that
   hands an attacker your secrets. If you need attestation on fork PRs, keep
@@ -368,8 +374,8 @@ a repo you control.
 
 ## Tests
 
-The verifier has its own test suite; nothing it attests is worth much if its two hash
-derivations don't agree.
+The verifier has its own test suite. Nothing it attests is worth much if its two
+hash derivations do not agree.
 
 ```bash
 forge test            # Solidity: hashing, MultiSend packing, every JSON format
@@ -377,7 +383,7 @@ forge test            # Solidity: hashing, MultiSend packing, every JSON format
 ```
 
 `test/fixtures/` holds one file per supported shape, including a real
-`SafeTxHelper`-generated batch from FraxFinance's `frax-oft-upgradeable` — see
+`SafeTxHelper`-generated batch from FraxFinance's `frax-oft-upgradeable`. See
 [`test/fixtures/README.md`](test/fixtures/README.md). Both suites derive hashes from
 the same fixtures independently and assert the same pinned values, so a divergence
 between the bash and Solidity implementations fails the build.
@@ -418,19 +424,19 @@ forge-attest/
 
 ## Trust anchor
 
-`forge-attest` never asks you to trust *it*. Every hash is derived three ways (cast,
-Solidity, and — live — `safe-tx-hashes-util`) from inputs you pin, and the two offline
-implementations fold batches independently rather than sharing code. Don't trust,
-verify.
+`forge-attest` never asks you to trust *it*. Every hash is derived three ways from
+inputs you pin: with `cast`, in Solidity, and live with `safe-tx-hashes-util`. The
+two offline implementations fold batches independently rather than sharing code. Do
+not trust, verify.
 
 ## Licence
 
-MIT — see [`LICENSE`](LICENSE), with the exception recorded in [`NOTICE`](NOTICE).
+MIT. See [`LICENSE`](LICENSE), with the exception recorded in [`NOTICE`](NOTICE).
 
 One exception: [`lib/safe_hashes.sh`](lib/safe_hashes.sh) is vendored from
 [`safe-tx-hashes-util`](https://github.com/pcaversaccio/safe-tx-hashes-util) and stays
 under **AGPL-3.0-only** ([text](lib/LICENSE-AGPL-3.0.txt)). It powers the live check
 (#5), is redistributed verbatim with its licence header intact, and is invoked as a
 separate process. The MIT grant does not extend to it. If your policy disallows AGPL
-code, note that the four offline checks never touch that file — but you would be
+code, note that the four offline checks never touch that file. You would still be
 redistributing it if you fork this repo.
