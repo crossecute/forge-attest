@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# normalize.sh — turn *any* supported Safe transaction JSON into forge-attest's
-#                canonical single-SafeTx form, so every downstream check (sha256,
-#                cast derivation, Solidity cross-check, live comparison) has one
-#                stable thing to look at.
+# normalize.sh: turn *any* supported Safe transaction JSON into forge-attest's
+#               canonical single-SafeTx form, so every downstream check (sha256,
+#               cast derivation, Solidity cross-check, live comparison) has one
+#               stable thing to look at.
 #
 # Supported input formats (auto-detected, override with --format):
 #
 #   safe-tx      A flat object already carrying the full EIP-712 SafeTx field set
 #                (what forge-attest's own example producer emits).
 #
-#   tx-builder   A Safe{Wallet} Transaction Builder batch — the shape emitted by
-#                FraxFinance's `SafeTxHelper.writeTxs` and by the Safe UI's
-#                "export batch":
+#   tx-builder   A Safe{Wallet} Transaction Builder batch. This is the shape
+#                FraxFinance's `SafeTxHelper.writeTxs` emits, and the shape the
+#                Safe UI's "export batch" gives you:
 #                  { version, chainId, createdAt, meta, transactions: [
 #                      { to, value, data, operation? }, ... ] }
 #                A batch carries no Safe address, nonce or gas fields, so those
@@ -20,13 +20,13 @@
 #                into a single `multiSend(bytes)` delegatecall exactly as the Safe
 #                UI does, which is what the owners actually sign.
 #
-#   tx-array     A bare JSON array of { to, value, data, operation? } — same
-#                treatment as tx-builder, with chainId supplied via flags.
+#   tx-array     A bare JSON array of { to, value, data, operation? }. Treated
+#                the same as tx-builder, with chainId supplied via flags.
 #
 # The canonical output is deterministic: fixed key order, all scalars quoted, all
 # hex lowercased. Its sha256 is therefore stable across producers even when the
 # source JSON carries volatile metadata (`createdAt`, `meta`, key ordering,
-# address checksum casing) — see --print-digest.
+# address checksum casing). See --print-digest.
 #
 # Usage:
 #   normalize.sh --input <json> [options] > canonical.json
@@ -52,8 +52,8 @@
 #   --print-digest          also print `CANONICAL_SHA256=<sha>` on stderr
 #   --summary               print a human-readable batch summary on stderr
 #
-# Where a value is present in BOTH the JSON and the flags, the two must agree —
-# a mismatch is a tampering signal and is a hard error, never a silent override.
+# Where a value is present in BOTH the JSON and the flags, the two must agree.
+# A mismatch is a tampering signal and is a hard error, never a silent override.
 set -euo pipefail
 
 NORMALIZE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -64,8 +64,8 @@ BATCH_MODE="auto"; MULTISEND=""
 SAFE_TX_GAS=""; BASE_GAS=""; GAS_PRICE=""; GAS_TOKEN=""; REFUND_RECEIVER=""
 PRINT_DIGEST=0; SUMMARY=0
 
-# Canonical MultiSendCallOnly deployments — the contract Safe{Wallet} uses to
-# execute Transaction Builder batches.
+# Canonical MultiSendCallOnly deployments. This is the contract Safe{Wallet} uses
+# to execute Transaction Builder batches.
 MULTISEND_CALL_ONLY_130="0x40a2accbd92bca938b02010e17a5b8929b49130d"
 MULTISEND_CALL_ONLY_141="0x9641d764fc13c8b624c04430c7356c1c7c8102e2"
 MULTISEND_CALL_ONLY_150="0xa83c336b20401af773b6219ba5027174338d1836"
@@ -231,7 +231,7 @@ else
   (( tx_count > 0 )) || die "batch contains no transactions"
 
   # A UI-exported batch may describe a call as an ABI method + inputs with a null
-  # `data`. Encoding that needs the target ABI, which is out of scope — refuse
+  # `data`. Encoding that needs the target ABI, which is out of scope, so refuse
   # rather than silently attest an empty calldata.
   for (( i = 0; i < tx_count; i++ )); do
     m=$(printf '%s' "$batch_json" | jq -r ".[$i].method // empty")
@@ -256,8 +256,8 @@ else
     [[ "$operation" == "0" || "$operation" == "1" ]] || die "operation must be 0 or 1, got $operation"
   else
     # Only versions whose deployment address we actually know are mapped. Guessing
-    # for an unknown version would silently produce a `to` the Safe never uses — a
-    # wrong hash that looks authoritative. test/SafeTx.sol implements exactly this
+    # for an unknown version would silently produce a `to` the Safe never uses,
+    # which is a wrong hash that looks authoritative. test/SafeTx.sol implements exactly this
     # mapping; the two must not drift, or the independent derivations stop being a
     # check on each other.
     if [[ -z "$MULTISEND" ]]; then
@@ -271,11 +271,11 @@ else
       # The canonical address is not universal. On some chains it is not deployed
       # at all, and on the zkSync-family chains a different-bytecode deployment
       # exists that is the one Safe{Wallet} actually uses. Defaulting there would
-      # produce a `to` the Safe never calls — a wrong hash that looks authoritative.
+      # produce a `to` the Safe never calls, a wrong hash that looks authoritative.
       # No existence gate: a missing table means the guard is not running, which
       # must be loud rather than quietly skipped. test/SafeTx.sol does the same.
       exceptions="$NORMALIZE_DIR/multisend-exceptions.json"
-      [[ -f "$exceptions" ]] || die "missing $exceptions — cannot check whether chain $chain_id uses the canonical MultiSendCallOnly"
+      [[ -f "$exceptions" ]] || die "missing $exceptions: cannot check whether chain $chain_id uses the canonical MultiSendCallOnly"
       if [[ "$(jq -r --arg v "$ms_key" --argjson c "$chain_id" \
                  '((.[$v] // []) | index($c)) != null' "$exceptions")" == "true" ]]; then
         die "chain $chain_id does not use the canonical MultiSendCallOnly for Safe $safe_version; pass --multisend explicitly (see lib/multisend-exceptions.json)"

@@ -2,9 +2,9 @@
 #
 # Shell-side test suite for forge-attest.
 #
-#   1. lib/normalize.sh — format detection, canonicalisation, guard rails
-#   2. cast vs Solidity — the two hash derivations must agree on every fixture
-#   3. attest.sh        — a full end-to-end run against a synthetic producer repo
+#   1. lib/normalize.sh: format detection, canonicalisation, guard rails
+#   2. cast vs Solidity: the two hash derivations must agree on every fixture
+#   3. attest.sh:        a full end-to-end run against a synthetic producer repo
 #                         that emits a Transaction Builder batch
 #
 # Usage: test/shell/run.sh
@@ -138,7 +138,7 @@ assert_eq "…but works once the address is named" \
   "0x9641d764fc13c8b624c04430c7356c1c7c8102e2"
 
 # Gas/refund fields are hash inputs that no batch format carries, so they come
-# from config — and must reach both derivations, not just this one.
+# from config, and must reach both derivations, not just this one.
 assert_eq "gas fields land in the canonical form" \
   "$(normalize tx-builder-frax-optimism.json --gas-price 1000 --safe-tx-gas 50000 \
        | jq -r '[.gasPrice, .safeTxGas] | join(" ")')" \

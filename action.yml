@@ -2,8 +2,8 @@ name: forge-attest
 description: Prove a queued Safe transaction is exactly the output of a pinned Forge script.
 author: crossecute
 
-# SECURITY: this action runs the code named by your attest.toml — `producer_setup`
-# via `bash -c`, and the producer repo's Forge script. Anyone who can edit that
+# SECURITY: this action runs the code named by your attest.toml. That is
+# `producer_setup` via `bash -c`, and the producer repo's Forge script. Anyone who can edit that
 # config can execute code on the runner. That is fine behind review, and fine for
 # fork PRs on the standard `pull_request` trigger (read-only token, no secrets).
 # Do NOT run it from `pull_request_target`, which would combine that execution
@@ -64,7 +64,7 @@ runs:
   steps:
     # No checkout of this repository is needed: `uses:` has already placed it at
     # `github.action_path`, at the exact ref the caller pinned. That is the whole
-    # reason the action lives here rather than in a wrapper repo — one ref pins
+    # reason the action lives here rather than in a wrapper repo: one ref pins
     # the action, attest.sh, lib/, and the Solidity cross-check together.
     - name: Install Foundry
       if: inputs.install-foundry == 'true'
@@ -105,7 +105,7 @@ runs:
         # Random heredoc delimiter: the document embeds config-derived strings,
         # and on a fork PR the config is attacker-controlled. jq escapes
         # newlines inside string values, so a bare delimiter line should not be
-        # reachable today — this just removes the question from review.
+        # reachable today. This just removes the question from review.
         delim="FORGE_ATTEST_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
         {

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-#  forge-attest — prove a Gnosis Safe transaction is exactly the output of a
-#                 specific Forge script, unmanipulated.
+#  forge-attest: prove a Gnosis Safe transaction is exactly the output of a
+#                specific Forge script, and was not changed afterwards.
 #
 #  Given a pinned commit of a "producer" repo, this:
 #    1. clones it at that exact commit,
 #    2. re-runs its Forge script deterministically,
 #    3. checks the emitted JSON's sha256 against a pinned value,      (source integrity)
-#    4. normalises it — any supported Safe JSON shape, including a
-#       Transaction Builder batch — into one canonical SafeTx,        (canonical form)
+#    4. normalises it into one canonical SafeTx, from any supported
+#       Safe JSON shape including a Transaction Builder batch,        (canonical form)
 #    5. derives the Safe EIP-712 tx hash two independent ways         (cast + Solidity)
 #       and checks both against a pinned expected hash,
 #    6. optionally checks that same hash against what is actually
@@ -123,9 +123,10 @@ echo
 # Step 2 re-runs `forge script` and step 3 pins its output byte-exactly, so the
 # forge build is an input to the claim as much as the producer commit is. Left
 # unrecorded, a Foundry upgrade shifts the output bytes and the run fails with
-# nothing pointing at the cause — and the quickest way to green is to blank out
-# expected_output_sha256, which throws away the strongest check for an unrelated
-# reason. Recording it makes a divergence self-explaining; pinning it is opt-in.
+# nothing pointing at the cause. The quickest way back to green is then to blank
+# out expected_output_sha256, which throws away the strongest check for an
+# unrelated reason. Recording it makes a divergence explain itself. Pinning it is
+# opt-in.
 step "Toolchain"
 forge_version=$(forge --version 2>/dev/null | head -1 | sed -E 's/^forge (Version: )?//')
 cast_version=$(cast  --version 2>/dev/null | head -1 | sed -E 's/^cast (Version: )?//')
@@ -133,7 +134,7 @@ forge_commit=$(forge --version 2>/dev/null | awk '/Commit SHA:/ {print $3; exit}
 printf '    forge    : %s%s\n' "$forge_version" "${forge_commit:+ ($forge_commit)}"
 printf '    cast     : %s\n' "$cast_version"
 if [[ -z "$expected_forge_version" ]]; then
-  warn "no expected_forge_version pinned — output bytes may move with the toolchain"
+  warn "no expected_forge_version pinned: output bytes may move with the toolchain"
 elif [[ "$forge_version" == "$expected_forge_version" ]]; then
   ok "matches pinned expected_forge_version"
 else
@@ -153,7 +154,7 @@ ok "checked out $actual_commit"
 
 # The producer's own solc pin, if it has one. A repo that leaves solc unset gets
 # whatever the local foundry resolves, which is the same reproducibility hole one
-# level down — worth surfacing in the verdict rather than discovering later.
+# level down. Better to surface it in the verdict than to discover it later.
 producer_solc=""
 if [[ -f "$WORK/repo/foundry.toml" ]]; then
   producer_solc=$(toml_get "$WORK/repo/foundry.toml" solc)
@@ -162,7 +163,7 @@ fi
 if [[ -n "$producer_solc" ]]; then
   ok "producer pins solc $producer_solc"
 else
-  warn "producer does not pin solc — its build depends on the local toolchain"
+  warn "producer does not pin solc: its build depends on the local toolchain"
 fi
 
 # --- 2. run the producer's Forge script ---------------------------------------
@@ -181,12 +182,12 @@ ok "produced $output_path"
 # --- 3. source integrity: sha256 of the emitted JSON --------------------------
 # Byte-exact, so it only applies to producers whose output has no volatile
 # metadata. Batch writers commonly stamp a `createdAt`; for those, pin
-# expected_canonical_sha256 (step 4) instead — it is stable by construction.
+# expected_canonical_sha256 (step 4) instead. It is stable by construction.
 step "Checking output integrity (sha256)"
 got_sha=$(sha256sum "$out_json" | awk '{print $1}')
 printf '    sha256   : %s\n' "$got_sha"
 if [[ -z "$expected_sha" ]]; then
-  warn "no expected_output_sha256 pinned — skipping byte-integrity check"
+  warn "no expected_output_sha256 pinned: skipping byte-integrity check"
 elif [[ "$got_sha" == "$expected_sha" ]]; then
   ok "matches pinned sha256"
 else
@@ -219,14 +220,14 @@ grep -v '^CANONICAL_SHA256=' "$WORK/normalize.err" || true
 canonical_sha=$(sha256sum "$canonical" | awk '{print $1}')
 printf '    canonical: %s\n' "$canonical_sha"
 if [[ -z "$expected_canonical_sha" ]]; then
-  warn "no expected_canonical_sha256 pinned — skipping canonical-integrity check"
+  warn "no expected_canonical_sha256 pinned: skipping canonical-integrity check"
 elif [[ "$canonical_sha" == "$expected_canonical_sha" ]]; then
   ok "matches pinned canonical sha256"
 else
   record_fail "canonical sha256 mismatch (expected $expected_canonical_sha)"
 fi
 if [[ -z "$expected_sha" && -z "$expected_canonical_sha" ]]; then
-  warn "neither sha256 is pinned — nothing anchors this run to a reviewed output"
+  warn "neither sha256 is pinned: nothing anchors this run to a reviewed output"
 fi
 
 # --- 5a. derive the Safe tx hash via cast -------------------------------------
@@ -247,7 +248,7 @@ fi
 
 # --- 5b. cross-check the Safe tx hash via Solidity (forge test) ---------------
 # The Solidity side re-reads the *producer's* JSON, not the canonical form, so it
-# redoes the batch folding independently — a bug in normalize.sh cannot hide here.
+# redoes the batch folding independently, so a bug in normalize.sh cannot hide.
 step "Cross-checking Safe tx hash (Solidity)"
 mkdir -p "$SCRIPT_DIR/out"
 cp "$out_json" "$SCRIPT_DIR/out/producer-tx.json"
@@ -282,7 +283,7 @@ else
 fi
 
 # --- 6. nested Safe: the approval a child Safe must send ----------------------
-# The parent transaction is never signed by the child's owners — only its hash is
+# The parent transaction is never signed by the child's owners. Only its hash is
 # approved, via `parent.approveHash(h)`. That approval is a Safe transaction in
 # its own right, and it is the one they actually sign. Every field of it is
 # determined by (parent, h, child, child nonce), so it is constructed here rather
@@ -335,7 +336,7 @@ if [[ -n "$child_safe" ]]; then
     set -e
     if [[ "$child_rc" -ne 0 || -z "$child_live" ]]; then
       msg="child Safe queue unreachable or nothing at nonce $child_nonce"
-      if [[ "$REQUIRE_LIVE" == 1 ]]; then record_fail "$msg"; else warn "$msg — skipping"; fi
+      if [[ "$REQUIRE_LIVE" == 1 ]]; then record_fail "$msg"; else warn "$msg: skipping"; fi
     elif [[ "$child_live" == "$child_hash" ]]; then
       ok "the transaction queued on the child is this approval"
     else
@@ -347,7 +348,7 @@ fi
 # --- 7. live integrity: compare against the Safe Transaction Service ----------
 step "Live check against Safe Transaction Service"
 if [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
-  warn "safe_network/address/nonce not fully set — skipping live check"
+  warn "safe_network/address/nonce not fully set: skipping live check"
 else
   # Run errexit-free: the tool and the hash-parsing pipes may legitimately fail
   # (offline, or no tx queued at that nonce) and that must not abort attestation.
@@ -367,7 +368,7 @@ else
     if [[ "$REQUIRE_LIVE" == 1 ]]; then
       cat "$live_out" >&2; record_fail "$msg"
     else
-      warn "$msg — skipping (use --require-live to enforce)"
+      warn "$msg: skipping (use --require-live to enforce)"
     fi
   else
     printf '    safeTx   : %s\n' "$live_hash"
@@ -436,8 +437,8 @@ if [[ ${#FAILURES[@]} -eq 0 ]]; then
     printf '    %s sign %s on %s\n' "$C_BOLD" "$child_hash" "$child_safe"
     # The parent hash binds the parent's nonce, and `approveHash` stores only a
     # flag. If the parent's nonce moves, every approval silently stops matching
-    # and execution fails with an unhelpful "invalid owner" error — so the
-    # expiry is part of the verdict, not a footnote.
+    # and execution fails with an unhelpful "invalid owner" error. The expiry
+    # is therefore part of the verdict, not a footnote.
     printf '    %svalid only while %s nonce == %s%s\n' \
       "$C_YELLOW" "$safe_address" "$safe_nonce" "$C_RESET"
   fi

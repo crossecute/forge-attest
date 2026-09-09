@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# nested.sh — build the Safe transaction a *child* Safe sends to approve a
-#             transaction on a parent Safe it owns.
+# nested.sh: build the Safe transaction a *child* Safe sends to approve a
+#            transaction on a parent Safe it owns.
 #
 # A Safe cannot produce an ECDSA signature, so when a Safe owns another Safe it
 # approves on-chain instead: it calls `parent.approveHash(h)`, where `h` is the
@@ -26,7 +26,7 @@
 # Note what the parent hash does NOT tell the Safe: nothing. `approveHash` stores
 # a flag against (owner, hash) and never learns the preimage. At execution the
 # full transaction is supplied again and re-hashed. That is why the parent's
-# decoded intent has to travel with this — on-chain state can never explain to a
+# decoded intent has to travel with this. On-chain state can never explain to a
 # signer what they approved.
 #
 # Usage:

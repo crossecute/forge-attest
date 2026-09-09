@@ -88,7 +88,7 @@ contract AttestTest {
         return bytes(v).length == 0 ? 0 : vm.parseUint(v);
     }
 
-    /// @dev 0 is a legitimate nonce, so an absent one cannot be defaulted — the
+    /// @dev 0 is a legitimate nonce, so an absent one cannot be defaulted. The
     ///      result would be a valid-looking hash for a transaction nobody meant.
     ///      attest.sh treats it as required too.
     function _requiredEnvUint(string memory name) private view returns (uint256) {

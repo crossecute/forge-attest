@@ -5,7 +5,7 @@ import {Vm, SafeTxLib} from "./SafeTx.sol";
 
 /// @title SafeTxHashTest
 /// @notice Standalone unit tests for forge-attest's Solidity hash derivation.
-///         Everything here runs from checked-in fixtures with `forge test` — no
+///         Everything here runs from checked-in fixtures with `forge test`. No
 ///         network, no env vars, no cloning. The pinned hashes are the values
 ///         `lib/derive.sh` computes with `cast` from the same fixtures, so a
 ///         divergence between the two implementations fails the build.
@@ -73,7 +73,7 @@ contract SafeTxHashTest {
     // ------------------------------------ format 2: Transaction Builder batch (Frax)
 
     /// The real `SafeTxHelper`-generated artifact from
-    /// frax-oft-upgradeable — six `upgradeAndCall` proxy admin calls on Optimism.
+    /// frax-oft-upgradeable: six `upgradeAndCall` proxy admin calls on Optimism.
     function test_FraxBatch_MatchesPinnedHash() external view {
         string memory json = _read("tx-builder-frax-optimism.json");
 
@@ -155,7 +155,7 @@ contract SafeTxHashTest {
 
     // ------------------------------------------------------- MultiSend encoding
 
-    /// Golden bytes for the packed MultiSend layout — `operation | to | value |
+    /// Golden bytes for the packed MultiSend layout: `operation | to | value |
     /// data.length | data`, tightly packed with no padding between entries.
     function test_MultiSendPayloadLayout() external pure {
         SafeTxLib.InnerTx[] memory txs = new SafeTxLib.InnerTx[](2);
@@ -214,8 +214,8 @@ contract SafeTxHashTest {
 
     // ------------------------------------------------------------ batch wrapping
 
-    /// A single-transaction batch is sent to its target directly — the same thing
-    /// Safe{Wallet} does — so it must hash like a plain SafeTx, not a MultiSend.
+    /// A single-transaction batch is sent to its target directly, the same thing
+    /// Safe{Wallet} does, so it must hash like a plain SafeTx, not a MultiSend.
     function test_SingleTransactionBatchIsNotWrapped() external view {
         string memory json = _read("tx-builder-single.json");
         SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, _binding());
@@ -242,8 +242,8 @@ contract SafeTxHashTest {
 
     /// The version -> MultiSend mapping must cover exactly the versions
     /// `lib/normalize.sh` covers. If one side maps a version the other doesn't,
-    /// the two derivations pick different `to` addresses and silently disagree —
-    /// which is the one failure mode this whole design exists to prevent.
+    /// the two derivations pick different `to` addresses and silently disagree.
+    /// That is the one failure mode this whole design exists to prevent.
     function test_DefaultMultiSendMapsOnlyKnownVersions() external {
         require(SafeTxLib.defaultMultiSend("1.3.0", 1) == SafeTxLib.MULTI_SEND_CALL_ONLY_1_3_0, "1.3.0");
         require(SafeTxLib.defaultMultiSend("1.3.1", 1) == SafeTxLib.MULTI_SEND_CALL_ONLY_1_3_0, "1.3.1");
@@ -261,7 +261,7 @@ contract SafeTxHashTest {
     /// The canonical MultiSendCallOnly is not universal: on some chains it is not
     /// deployed, and on the zkSync-family chains a different-bytecode deployment is
     /// the one Safe{Wallet} uses. Defaulting there would produce a `to` the Safe
-    /// never calls — a wrong hash that still looks authoritative.
+    /// never calls, a wrong hash that still looks authoritative.
     function test_RefusesCanonicalMultiSendOnDivergentChains() external {
         (bool ok, bytes memory err) = address(this).call(
             abi.encodeCall(this.readAnyExternal, (_read("tx-builder-zksync-era.json"), _binding()))
@@ -269,7 +269,7 @@ contract SafeTxHashTest {
         require(!ok, "zkSync Era accepted the canonical address");
         require(_contains(err, "does not use the canonical MultiSendCallOnly"), "wrong revert");
 
-        // Naming the address explicitly is still fine — the guard is on guessing.
+        // Naming the address explicitly is still fine. The guard is on guessing.
         SafeTxLib.Binding memory b = _binding();
         b.multiSend = 0xf220D3b4DFb23C4ade8C88E526C1353AbAcbC38F; // zkSync 1.3.0
         require(SafeTxLib.readAny(_read("tx-builder-zksync-era.json"), b).to == b.multiSend, "explicit rejected");
@@ -285,7 +285,7 @@ contract SafeTxHashTest {
         require(SafeTxLib.defaultMultiSend("1.5.0", 324) == SafeTxLib.MULTI_SEND_CALL_ONLY_1_5_0, "1.5.0 has no exceptions");
     }
 
-    /// An unknown version is still attestable — the caller just has to name the
+    /// An unknown version is still attestable. The caller just has to name the
     /// address rather than have one invented for them.
     function test_UnknownVersionWorksWithExplicitMultiSend() external view {
         SafeTxLib.Binding memory b = _binding();
@@ -348,7 +348,7 @@ contract SafeTxHashTest {
     // ------------------------------------------------- a batch that binds itself
 
     /// The Transaction Builder schema has a slot for the Safe a batch was built
-    /// for — `meta.createdFromSafeAddress`. A producer that fills it in makes the
+    /// for: `meta.createdFromSafeAddress`. A producer that fills it in makes the
     /// file self-describing, so the Safe no longer has to be supplied out of band.
     function test_BatchDeclaringItsOwnSafe() external view {
         string memory json = _read("tx-builder-self-binding.json");
@@ -370,8 +370,8 @@ contract SafeTxHashTest {
         _assertEq(t.hash(), 0x451bf409acadd38b8aecde55d6fd4b4f2c0689465525db81f10ec6426a376d83, "agreeing config");
     }
 
-    /// A config that contradicts the file is a tampering signal — someone pointed
-    /// a reviewed batch at a different Safe — and must never be silently resolved.
+    /// A config that contradicts the file is a tampering signal. Someone pointed
+    /// a reviewed batch at a different Safe. It must never be silently resolved.
     function test_RejectsDeclaredSafeContradictingConfig() external {
         SafeTxLib.Binding memory b = _binding();
         b.safe = address(0xB0B);
@@ -409,8 +409,8 @@ contract SafeTxHashTest {
     // --------------------------------------------------------------- guard rails
 
     /// A UI-exported batch may describe a call as an ABI method plus inputs with a
-    /// null `data`. Encoding that needs the target ABI — refuse rather than attest
-    /// a transaction whose calldata we silently invented.
+    /// null `data`. Encoding that needs the target ABI, so refuse rather than
+    /// attest a transaction whose calldata we silently invented.
     function test_RejectsContractMethodWithoutData() external {
         (bool ok, bytes memory err) =
             address(this).call(abi.encodeCall(this.readBatchExternal, (_read("tx-builder-contract-method.json"))));
@@ -419,7 +419,7 @@ contract SafeTxHashTest {
     }
 
     /// MultiSendCallOnly reverts on inner delegatecalls, so a batch containing one
-    /// could never execute — signing it would attest an unusable transaction.
+    /// could never execute. Signing it would attest an unusable transaction.
     function test_RejectsInnerDelegateCallUnderCallOnly() external {
         SafeTxLib.InnerTx[] memory inner = SafeTxLib.readBatch(_read("tx-builder-delegatecall.json"));
         require(inner[1].operation == 1, "fixture should contain a delegatecall");
@@ -458,7 +458,7 @@ contract SafeTxHashTest {
         }
     }
 
-    /// The 1.5.0 default in particular — the version added alongside this guard.
+    /// The 1.5.0 default in particular, the version added alongside this guard.
     function test_RejectsInnerDelegateCallUnderThe150Default() external {
         SafeTxLib.Binding memory b = _binding();
         b.safeVersion = "1.5.0";
@@ -504,7 +504,7 @@ contract SafeTxHashTest {
         _assertEq(t.hash(), 0x73c63c06ac272032873f01cc1a80394bda911d061501699ad598f56d03313105, "approval hash");
     }
 
-    /// Everything the approval binds must move its hash — otherwise a signer could
+    /// Everything the approval binds must move its hash. Otherwise a signer could
     /// be shown one approval and have another executed.
     function test_ApprovalHashBindsEveryInput() external pure {
         bytes32 base = SafeTxLib.approvalTx(PARENT, PARENT_HASH, CHILD, 7, 1, "1.3.0").hash();
@@ -554,7 +554,7 @@ contract SafeTxHashTest {
         (bool b,) = address(this).call(abi.encodeCall(this.approvedHashInExternal, (wrongTarget, PARENT)));
         require(!b, "approval aimed elsewhere accepted");
 
-        // Two approvals in one transaction is ambiguous — which did they sign for?
+        // Two approvals in one transaction is ambiguous. Which did they sign for?
         SafeTxLib.InnerTx[] memory two = new SafeTxLib.InnerTx[](2);
         two[0] = SafeTxLib.InnerTx({
             to: PARENT, value: 0, operation: 0,
@@ -569,7 +569,7 @@ contract SafeTxHashTest {
     }
 
     /// An entry with the parent as target and approveHash calldata, but executed as
-    /// a DELEGATECALL or carrying value, is not an approval — it runs the parent's
+    /// a DELEGATECALL or carrying value, is not an approval. It runs the parent's
     /// code against the child's storage, or moves ether, and approves nothing. It
     /// reads like an approval to anyone eyeballing `to` and the selector.
     function test_OnlyAZeroValueCallCountsAsAnApproval() external {

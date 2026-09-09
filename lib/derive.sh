@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# derive.sh — recompute the Gnosis Safe EIP-712 transaction hash from a JSON file
-#             of SafeTx fields, using `cast`. This is one of forge-attest's two
-#             independent hash derivations (the other is Solidity, in test/).
+# derive.sh: recompute the Gnosis Safe EIP-712 transaction hash from a JSON file
+#            of SafeTx fields, using `cast`. This is one of forge-attest's two
+#            independent hash derivations (the other is Solidity, in test/).
 #
 # Usage:  derive.sh <safe-tx.json>
 # Output: three KEY=VALUE lines matching safe-tx-hashes-util's terminology:
