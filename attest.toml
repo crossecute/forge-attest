@@ -44,7 +44,7 @@ gas_price       = "0"
 gas_token       = "0x0000000000000000000000000000000000000000"
 refund_receiver = "0x0000000000000000000000000000000000000000"
 
-# --- Pinned expectations (what that commit MUST produce) -----------------------
+# --- Pinned expectations (what that commit must produce) -----------------------
 # expected_output_sha256    byte-exact hash of the producer's own JSON. Only
 #                           usable when the producer emits the same bytes every
 #                           run. Leave blank for writers that stamp a `createdAt`.
