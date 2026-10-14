@@ -6,7 +6,7 @@ author: crossecute
 # `producer_setup` via `bash -c`, and the producer repo's Forge script. Anyone who can edit that
 # config can execute code on the runner. That is fine behind review, and fine for
 # fork PRs on the standard `pull_request` trigger (read-only token, no secrets).
-# Do NOT run it from `pull_request_target`, which would combine that execution
+# Do not run it from `pull_request_target`, which would combine that execution
 # with the base repo's secrets and a writable token. See README → Threat model.
 
 branding:
