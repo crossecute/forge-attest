@@ -48,7 +48,8 @@ refund_receiver = "0x0000000000000000000000000000000000000000"
 #
 # The values below were derived from the pinned commit above; run once with them
 # blank and the orchestrator prints them for you to paste back in after you have
-# reviewed the transaction.
+# reviewed the transaction. That first run reports NOT ATTESTED, since nothing is
+# pinned yet.
 expected_output_sha256    = ""
 expected_canonical_sha256 = "3e04aa55c436e16cae1ce12e2c43922536ce1a1dfad9d6041c874ad382768efd"
 expected_safe_tx_hash     = "0x7f9d67d21eabf50afc3c0ef625d519918b4ca7037730caa7544576e12ad0c115"

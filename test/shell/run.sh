@@ -443,6 +443,22 @@ nonce_rc=$?
 if [[ $nonce_rc -ne 0 ]]; then pass "re-binding the batch to another nonce is NOT ATTESTED"
 else fail "a nonce change went undetected"; fi
 
+# With nothing pinned, cast agreeing with Solidity is the only check left, and
+# that ties the output to nothing anyone reviewed.
+write_config "$TMP/e2e-unpinned.toml" "" ""
+unpinned_out=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-unpinned.toml" --json 2>"$TMP/unpinned.err")
+unpinned_rc=$?
+if [[ $unpinned_rc -ne 0 ]]; then pass "a claim with no expected hash pinned is NOT ATTESTED"
+else fail "a claim with no expected hash pinned was accepted"; fi
+assert_eq "…and --json says attested is false" "$(jq -r .attested <<<"$unpinned_out")" "false"
+assert_contains "…naming the reason" "$(cat "$TMP/unpinned.err")" "no expected hash pinned"
+assert_eq "…while still reporting the hash to pin" "$(jq -r .hashes.safe_tx <<<"$unpinned_out")" "$E2E_HASH"
+
+write_config "$TMP/e2e-hash-only.toml" "" "$E2E_HASH"
+if bash "$ROOT/attest.sh" --config "$TMP/e2e-hash-only.toml" >/dev/null 2>&1; then
+  pass "pinning expected_safe_tx_hash alone is enough to attest"
+else fail "pinning expected_safe_tx_hash alone is enough to attest"; fi
+
 group "attest.sh: a nested claim"
 
 cat "$TMP/e2e.toml" >"$TMP/e2e-nested.toml"
