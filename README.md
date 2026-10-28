@@ -45,9 +45,11 @@ anyone reviewed.
 ./attest.sh --require-live        # fail (don't skip) if the live check can't run
 ./attest.sh --json                # machine-readable verdict on stdout
 ./attest.sh --keep                # keep the temp clone for inspection
+./attest.sh --propose -- --ledger # also sign and submit it (see below)
 ```
 
-Requirements: `git`, `foundry` (`forge` + `cast`), `jq`, `sha256sum`, `bash`.
+Requirements: `git`, `foundry` (`forge` + `cast`), `jq`, `sha256sum`, `bash`, and
+`curl` for `--propose`.
 
 Exit code is the verdict: `0` attested, `1` not.
 
@@ -76,14 +78,56 @@ caller gets both without scraping colours:
     "safe_tx_live": ""
   },
   "nested": null,
+  "proposal": null,
   "failures": []
 }
 ```
 
 A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` means
 the live check did not run, not that it passed. `nested` is `null` unless
-the claim names a child Safe. `failures` lists exactly what a `NOT ATTESTED`
-verdict is based on.
+the claim names a child Safe. `proposal` is `null` unless `--propose` signed and
+submitted the transaction, and is then `{ "action", "sender" }`. `failures` lists
+exactly what a `NOT ATTESTED` verdict is based on.
+
+### Proposing from the command line
+
+`--propose` removes the step of importing the producer's JSON into the Safe UI. Once
+the offline checks pass, it signs the transaction and submits it to the Safe
+Transaction Service itself:
+
+```bash
+SAFE_API_KEY=<key> ./attest.sh --config my.toml --propose -- --ledger
+```
+
+Everything after `--` is passed to `cast wallet sign`, so any signer `cast` supports
+works: `--ledger`, `--trezor`, `--account <keystore>`, `--interactive`. forge-attest
+never sees the key. In order, it:
+
+1. runs every offline check, and stops without signing or contacting the service
+   unless they all pass;
+2. reads the Safe's owners and nonce from the service, and refuses if the signer is
+   not an owner or the nonce has already been used;
+3. reads what is queued at the claim's nonce, and refuses if any *other*
+   transaction is queued there (a replacement, a rejection, or a substitution is
+   for the owners to resolve, not this tool);
+4. signs the canonical SafeTx as EIP-712 typed data, printing the domain, message
+   and `safeTxHash` the device should show, and checks that the signature recovers
+   to the signer over the attested hash. cast's EIP-712 encoder is then a third
+   derivation of that hash;
+5. proposes the transaction if nothing is queued, or adds a confirmation if this
+   exact hash already is. A signer who has already confirmed is not asked to sign
+   again;
+6. runs the live check, which `--propose` makes required, so the run ends
+   `ATTESTED` only once the queued transaction is the attested one.
+
+The first owner to run it proposes and each later owner confirms, with the same
+command. The service is chosen from `safe_network` using the same table as the
+live check, and must agree with the transaction's chain id. `SAFE_API_KEY` (from
+Safe's developer dashboard) is sent as a Bearer token when set.
+`SAFE_TX_SERVICE_URL` overrides the service base URL, for a self-hosted service.
+
+`--propose` does not support nested claims yet, and accepts owners only, not
+delegates.
 
 ## GitHub Action
 
@@ -324,7 +368,8 @@ than write the script for it:
 The model writes source code, never calldata. What owners sign is still the output
 of a reviewed script at a pinned commit, checked by the same five checks. The
 skills take addresses, decimals and signatures only from you, your repo, or an
-on-chain read, and never handle keys or propose anything.
+on-chain read, and never handle keys. They propose only through
+`attest.sh --propose`, after the claim attests, with the signer's own wallet.
 
 This does not widen what forge-attest proves. A prompt the model misreads produces
 a script that attests cleanly, as any wrong script would (see "Does not catch"
@@ -377,6 +422,12 @@ claude --plugin-dir ./forge-attest
   requires already knowing the honest answer and gains an attacker nothing. Treat
   an unreachable service as an unknown, not as a pass. That is what
   `--require-live` is for.
+- Under `--propose`, the same service also reports the Safe's owners, nonce and
+  queue, which decide whether to propose, confirm or refuse. A lying service can
+  make the run refuse, or send a signature over the attested hash to a service
+  that discards it. It cannot change what is signed: the typed data is built from
+  the attested canonical form, and the signature is checked against the attested
+  hash before it leaves the machine.
 - The four offline checks need no network at all beyond cloning the pinned
   producer commit, whose SHA is verified after checkout.
 
@@ -426,7 +477,7 @@ hash derivations do not agree.
 
 ```bash
 forge test            # Solidity: hashing, MultiSend packing, every JSON format
-./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, full end-to-end runs
+./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --propose
 ```
 
 `test/fixtures/` holds one file per supported shape, including a real
@@ -457,6 +508,7 @@ forge-attest/
 │   ├── nested.sh                 # constructs a child Safe's approveHash tx
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
+│   ├── propose.sh                # signs and submits an attested tx (--propose)
 │   ├── common.sh                 # logging + tiny TOML reader
 │   └── VENDORED.md               # provenance of the vendored tool
 ├── .claude-plugin/               # Claude Code plugin and marketplace manifests
