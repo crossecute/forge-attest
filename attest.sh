@@ -377,8 +377,10 @@ if [[ "$PROPOSE" == 1 ]]; then
     record_fail "--propose does not support nested claims"
   elif (( ${#FAILURES[@]} )); then
     record_fail "not proposing: the offline checks did not attest"
-  elif [[ -z "$safe_network" ]]; then
-    record_fail "--propose needs safe_network"
+  elif [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
+    # The live check below skips without all three, and it is what proves the
+    # submission landed.
+    record_fail "--propose needs safe_network, safe_address and safe_nonce"
   elif propose_out=$(bash "$SCRIPT_DIR/lib/propose.sh" \
       --canonical "$canonical" --hash "$cast_hash" --network "$safe_network" \
       --origin "forge-attest ${producer_script}@${producer_commit:0:12}" \

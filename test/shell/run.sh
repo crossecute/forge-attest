@@ -658,6 +658,30 @@ assert_contains "…with an origin naming the producer commit" "$(jq -r .origin 
 assert_eq "…and the live check is then required" \
   "$(jq -r '.failures[]' <<<"$sent_out")" "Safe Transaction Service unreachable or no tx at nonce 7"
 
+# A flat SafeTx carries its own Safe and nonce, so its claim can attest with
+# safe_address and safe_nonce blank. The required live check would then skip,
+# and nothing would prove the submission landed.
+cat >"$TMP/e2e-propose-flat.toml" <<EOF
+producer_repo   = "file://$PRODUCER"
+producer_commit = "$PRODUCER_COMMIT"
+producer_setup  = "mkdir -p out && cp '$FIX/safe-tx-single.json' out/flat.json"
+producer_script = "script/BuildBatch.s.sol:BuildBatch"
+output_path     = "out/flat.json"
+expected_safe_tx_hash = "$(safe_tx_hash "$single_canon")"
+safe_network = "ethereum"
+safe_address = ""
+safe_nonce   = ""
+EOF
+rm -f "$STUB/log"
+flat_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
+  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose-flat.toml" --json --propose -- --private-key "$OWNER_PK" \
+  2>"$TMP/flat.err")
+assert_eq "a claim without safe_address and safe_nonce is NOT ATTESTED under --propose" \
+  "$(jq -r .attested <<<"$flat_out")" "false"
+assert_eq "…failing only for the missing fields" "$(jq -r '.failures[]' <<<"$flat_out")" \
+  "--propose needs safe_network, safe_address and safe_nonce"
+assert_eq "…without contacting the service" "$(cat "$STUB/log" 2>/dev/null)" ""
+
 if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/gate.err"; then
   fail "--propose without wallet flags was accepted"
 else pass "--propose without wallet flags is refused"; fi

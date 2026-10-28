@@ -121,8 +121,9 @@ never sees the key. In order, it:
    `ATTESTED` only once the queued transaction is the attested one.
 
 The first owner to run it proposes and each later owner confirms, with the same
-command. The service is chosen from `safe_network` using the same table as the
-live check, and must agree with the transaction's chain id. `SAFE_API_KEY` (from
+command. The claim must set `safe_network`, `safe_address` and `safe_nonce`, since
+the live check needs all three. The service is chosen from `safe_network` using
+the same table as the live check, and must agree with the transaction's chain id. `SAFE_API_KEY` (from
 Safe's developer dashboard) is sent as a Bearer token when set.
 `SAFE_TX_SERVICE_URL` overrides the service base URL, for a self-hosted service.
 
