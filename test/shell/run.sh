@@ -481,8 +481,9 @@ assert_ne "re-binding the approval to another child nonce changes what is signed
 group "skills/build-safe-tx: the producer template"
 
 # The skill copies this template into an ops repo and writes claims that pin the
-# byte-exact sha256 and omit safe_address, so its output must be byte-stable and
-# self-binding.
+# byte-exact sha256, so its output must be byte-stable. The skill also sets
+# safe_address, as a cross-check against the file's own binding; the claim below
+# leaves it blank to show that binding holds on its own.
 TPL_PRODUCER="$TMP/template-producer"
 mkdir -p "$TPL_PRODUCER/script"
 cp "$PRODUCER/foundry.toml" "$TPL_PRODUCER/"
