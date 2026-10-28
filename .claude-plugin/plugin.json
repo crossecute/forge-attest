@@ -1,0 +1,9 @@
+{
+  "name": "forge-attest",
+  "description": "Build Gnosis Safe transactions from a prompt as deterministic Forge scripts, then prove with forge-attest that the queued transaction is exactly their output.",
+  "author": {
+    "name": "crossecute"
+  },
+  "homepage": "https://github.com/crossecute/forge-attest",
+  "license": "MIT"
+}

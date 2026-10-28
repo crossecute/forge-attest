@@ -6,6 +6,7 @@
 #   2. cast vs Solidity: the two hash derivations must agree on every fixture
 #   3. attest.sh:        a full end-to-end run against a synthetic producer repo
 #                         that emits a Transaction Builder batch
+#   4. skills:           the build-safe-tx template is byte-stable and attests
 #
 # Usage: test/shell/run.sh
 set -uo pipefail
@@ -492,6 +493,54 @@ sed 's|^child_nonce   = "7"|child_nonce   = "8"|' "$TMP/e2e-nested.toml" >"$TMP/
 assert_ne "re-binding the approval to another child nonce changes what is signed" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nested.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nonce8.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')"
+
+group "skills/build-safe-tx: the producer template"
+
+# The skill copies this template into an ops repo and writes claims that pin the
+# byte-exact sha256, so its output must be byte-stable. The skill also sets
+# safe_address, as a cross-check against the file's own binding; the claim below
+# leaves it blank to show that binding holds on its own.
+TPL_PRODUCER="$TMP/template-producer"
+mkdir -p "$TPL_PRODUCER/script"
+cp "$PRODUCER/foundry.toml" "$TPL_PRODUCER/"
+cp "$ROOT/skills/build-safe-tx/template.s.sol" "$TPL_PRODUCER/script/BuildSafeTx.s.sol"
+printf 'out/\nforge-out/\ncache/\n' >"$TPL_PRODUCER/.gitignore"
+(
+  cd "$TPL_PRODUCER"
+  git init --quiet
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit --quiet -m "template producer"
+) >/dev/null 2>&1
+(cd "$TPL_PRODUCER" && forge script script/BuildSafeTx.s.sol:BuildSafeTx >/dev/null 2>&1)
+TPL_SHA1=$(sha256sum <"$TPL_PRODUCER/out/safe-tx.json" | awk '{print $1}')
+sleep 1
+(cd "$TPL_PRODUCER" && forge script script/BuildSafeTx.s.sol:BuildSafeTx >/dev/null 2>&1)
+assert_eq "the template's output is byte-identical across runs" \
+  "$(sha256sum <"$TPL_PRODUCER/out/safe-tx.json" | awk '{print $1}')" "$TPL_SHA1"
+
+TPL_CANON="$TMP/template-canonical.json"
+bash "$NORMALIZE" --input "$TPL_PRODUCER/out/safe-tx.json" --nonce 7 >"$TPL_CANON" 2>/dev/null
+assert_eq "…and binds itself to its Safe" "$(jq -r .safe "$TPL_CANON")" "${SAFE,,}"
+
+cat >"$TMP/template.toml" <<EOF
+producer_repo   = "file://$TPL_PRODUCER"
+producer_commit = "$(git -C "$TPL_PRODUCER" rev-parse HEAD)"
+producer_setup  = ""
+producer_script = "script/BuildSafeTx.s.sol:BuildSafeTx"
+output_path     = "out/safe-tx.json"
+input_format    = "tx-builder"
+batch_mode      = "auto"
+safe_version    = "1.3.0"
+expected_output_sha256    = "$TPL_SHA1"
+expected_canonical_sha256 = "$(canonical_sha <"$TPL_CANON")"
+expected_safe_tx_hash     = "$(safe_tx_hash "$TPL_CANON")"
+safe_network = ""
+safe_address = ""
+safe_nonce   = "7"
+EOF
+tpl_out=$(bash "$ROOT/attest.sh" --config "$TMP/template.toml" 2>&1)
+if [[ $? -eq 0 ]]; then pass "a claim pinning the template's byte-exact sha256 is ATTESTED"
+else fail "a claim pinning the template's byte-exact sha256 is ATTESTED"$'\n'"$(sed 's/^/      /' <<<"$tpl_out")"; fi
 
 # --------------------------------------------------- vendored file integrity
 #

@@ -310,6 +310,50 @@ reviewing the transaction*. See
 [`attest.batch.example.toml`](attest.batch.example.toml) for a fully commented batch
 claim.
 
+## Building transactions from a prompt
+
+This repository is also a [Claude Code](https://claude.com/claude-code) plugin with
+two skills, for Safe owners and proposers who would rather describe a transaction
+than write the script for it:
+
+| Skill | Does |
+|-------|------|
+| [`build-safe-tx`](skills/build-safe-tx/SKILL.md) | Turns a request such as "send 50k USDC from the treasury Safe on Base to 0x…" into a Forge script in your ops repo, runs it, and decodes the output independently so you can check it against what you asked for. |
+| [`attest-safe-tx`](skills/attest-safe-tx/SKILL.md) | Writes the claim for that script's commit, shows the derived hashes for review, pins them, and reports the `safeTxHash` to compare on your hardware wallet. |
+
+The model writes source code, never calldata. What owners sign is still the output
+of a reviewed script at a pinned commit, checked by the same five checks. The
+skills take addresses, decimals and signatures only from you, your repo, or an
+on-chain read, and never handle keys or propose anything.
+
+This does not widen what forge-attest proves. A prompt the model misreads produces
+a script that attests cleanly, as any wrong script would (see "Does not catch"
+below). The decoded readback in `build-safe-tx` is where that is caught, so read
+it.
+
+Scripts start from [`skills/build-safe-tx/template.s.sol`](skills/build-safe-tx/template.s.sol),
+which emits a Transaction Builder batch with a fixed `createdAt` and a
+`createdFromSafeAddress`. Its output is byte-stable, so the claim pins
+`expected_output_sha256` as well as the canonical digest, and the file can be
+imported into the Safe{Wallet} Transaction Builder to propose it.
+
+Install from this repository:
+
+```bash
+claude plugin marketplace add crossecute/forge-attest
+claude plugin install forge-attest@forge-attest
+```
+
+That tracks the default branch. The skills run `attest.sh` and `lib/` from the
+installed copy, so the argument under [GitHub Action](#github-action) for pinning a
+SHA applies here too. To pin, check out a reviewed commit and load it for the
+session:
+
+```bash
+git clone https://github.com/crossecute/forge-attest && git -C forge-attest checkout <40-hex sha>
+claude --plugin-dir ./forge-attest
+```
+
 ## Threat model
 
 **Catches**
@@ -415,6 +459,10 @@ forge-attest/
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
 │   ├── common.sh                 # logging + tiny TOML reader
 │   └── VENDORED.md               # provenance of the vendored tool
+├── .claude-plugin/               # Claude Code plugin and marketplace manifests
+├── skills/
+│   ├── build-safe-tx/            # prompt -> producer script, plus its template
+│   └── attest-safe-tx/           # script commit -> pinned claim
 ├── test/
 │   ├── SafeTx.sol                # Solidity SafeTx model + MultiSend + JSON readers
 │   ├── SafeTxHash.t.sol          # standalone unit tests over the fixtures
