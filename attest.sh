@@ -380,6 +380,13 @@ else
   fi
 fi
 
+# Each pin commits to the transaction, so any one anchors the run. With none,
+# the checks above can only compare cast with Solidity, which proves nothing
+# about whether the output is the one someone reviewed.
+if [[ -z "$expected_sha$expected_canonical_sha$expected_hash$expected_child_hash" ]]; then
+  record_fail "no expected hash pinned: nothing ties this output to a reviewed one"
+fi
+
 # --- verdict ------------------------------------------------------------------
 # The JSON document goes to fd 3 (real stdout under --json, /dev/null otherwise),
 # so this runs unconditionally and the two report formats cannot drift apart.
