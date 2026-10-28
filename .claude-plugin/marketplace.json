@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "forge-attest",
+  "description": "forge-attest skills for Claude Code",
+  "owner": {
+    "name": "crossecute"
+  },
+  "plugins": [
+    {
+      "name": "forge-attest",
+      "description": "Build Gnosis Safe transactions from a prompt as deterministic Forge scripts, then prove with forge-attest that the queued transaction is exactly their output.",
+      "source": "./",
+      "category": "security"
+    }
+  ]
+}
