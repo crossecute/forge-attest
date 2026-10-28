@@ -625,6 +625,12 @@ if PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/lib/propose.sh" --canonical "
 else pass "a network whose chain differs from the transaction is refused"; fi
 assert_contains "…saying why" "$(cat "$TMP/propose.err")" "is chain 10 but the transaction is for chain 1"
 
+stub_state 7 '[]'
+PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/lib/propose.sh" --canonical "$E2E_CANON" \
+  --hash "$E2E_HASH" --network ethereum -- --private-key "$OWNER_PK" >/dev/null 2>&1
+assert_eq "a network name resolves through safe_hashes.sh's base URL" \
+  "$(head -1 "$STUB/log")" "GET https://api.safe.global/tx-service/eth/api/v1/safes/$SAFE/"
+
 group "attest.sh --propose: only an attested transaction is sent"
 
 sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e-unpinned.toml" >"$TMP/e2e-propose-unpinned.toml"

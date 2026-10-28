@@ -73,7 +73,9 @@ if [[ -n "${SAFE_TX_SERVICE_URL:-}" ]]; then
 else
   base=$(map_lookup API_URLS "$network")
   [[ -n "$base" ]] || die "unknown network '$network': not in lib/safe_hashes.sh"
-  base=${base/\$\{BASE_URL\}/https://api.safe.global/tx-service}
+  base_url=$(sed -n -E 's/^readonly BASE_URL="(.*)"$/\1/p' "$SCRIPT_DIR/safe_hashes.sh")
+  [[ -n "$base_url" ]] || die "could not read BASE_URL from lib/safe_hashes.sh"
+  base=${base/\$\{BASE_URL\}/$base_url}
   net_chain=$(map_lookup CHAIN_IDS "$network")
   [[ "$net_chain" == "$chain_id" ]] \
     || die "network '$network' is chain $net_chain but the transaction is for chain $chain_id"
