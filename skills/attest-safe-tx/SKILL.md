@@ -37,9 +37,10 @@ model" sections before writing a claim.
    skips without it. Leave all three `expected_*` hashes blank.
 
 2. **First run.** `${CLAUDE_PLUGIN_ROOT}/attest.sh --config attest/<OUTPUT_NAME>.toml --json`.
-   With blank pins it prints every derived hash. It also prints `ATTESTED`,
-   because with nothing pinned only the cast and Solidity derivations are
-   compared. Do not report that as a verdict. Show the user the decoded summary
+   With blank pins it prints every derived hash. This run is not a verdict,
+   whatever it prints: with nothing pinned it reports `NOT ATTESTED` with
+   `no expected hash pinned`. Any other failure is real; stop and report it.
+   Show the user the decoded summary
    and the three hashes. If they have not seen a readback of this transaction
    (build-safe-tx step 5), do that readback now before going on.
 
