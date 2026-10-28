@@ -6,7 +6,9 @@
 #   2. cast vs Solidity: the two hash derivations must agree on every fixture
 #   3. attest.sh:        a full end-to-end run against a synthetic producer repo
 #                         that emits a Transaction Builder batch
-#   4. skills:           the build-safe-tx template is byte-stable and attests
+#   4. propose.sh:       signing and submission against a stubbed Transaction
+#                         Service, and attest.sh --propose refusing unattested txs
+#   5. skills:           the build-safe-tx template is byte-stable and attests
 #
 # Usage: test/shell/run.sh
 set -uo pipefail
@@ -493,6 +495,167 @@ sed 's|^child_nonce   = "7"|child_nonce   = "8"|' "$TMP/e2e-nested.toml" >"$TMP/
 assert_ne "re-binding the approval to another child nonce changes what is signed" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nested.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nonce8.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')"
+
+# ------------------------------------------------------------ propose.sh
+
+group "propose.sh: signing and submission"
+
+# A stand-in for curl that serves canned Transaction Service responses from
+# $STUB/safe.json and $STUB/queue.json, answers every POST with 201, and logs
+# each request so a test can assert what was (or was not) sent.
+STUB="$TMP/stub"
+mkdir -p "$STUB/bin"
+cat >"$STUB/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+out="" method=GET body="" url="" auth=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -X) method="$2"; shift 2 ;;
+    -H) [[ "$2" == Authorization:* ]] && auth="$2"; shift 2 ;;
+    --data-binary) body="${2#@}"; shift 2 ;;
+    -w|--max-time) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+echo "$method $url" >>"$STUB/log"
+[[ -n "$auth" ]] && echo "$auth" >>"$STUB/auth"
+case "$method $url" in
+  "GET "*/v1/safes/*)                  cp "$STUB/safe.json" "$out"; printf 200 ;;
+  "GET "*/multisig-transactions/\?*)   cp "$STUB/queue.json" "$out"; printf 200 ;;
+  POST*) cp "$body" "$STUB/posted.json"; echo '{}' >"$out"; printf 201 ;;
+  *) printf 404 ;;
+esac
+EOF
+chmod +x "$STUB/bin/curl"
+
+# Anvil's well-known dev keys: test values only.
+OWNER_PK=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+OWNER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+OTHER_PK=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+OTHER=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+OTHER_HASH=0x1111111111111111111111111111111111111111111111111111111111111111
+
+stub_state() { # <safe nonce> <queue results json> [owners json]
+  rm -f "$STUB/log" "$STUB/auth" "$STUB/posted.json"
+  jq -n --argjson n "$1" --argjson o "${3:-[\"$OWNER\"]}" '{nonce: $n, owners: $o}' >"$STUB/safe.json"
+  jq -n --argjson r "$2" '{count: ($r | length), results: $r}' >"$STUB/queue.json"
+}
+queued() { # <hash> <confirming owner...>
+  local h="$1"; shift
+  jq -n --arg h "$h" '[{safeTxHash: $h, confirmations: ($ARGS.positional | map({owner: .}))}]' --args "$@"
+}
+propose() { # <canonical> <hash> <pk> -> stdout of propose.sh, stderr in $TMP/propose.err
+  PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
+  SAFE_API_KEY=test-key \
+    bash "$ROOT/lib/propose.sh" --canonical "$1" --hash "$2" --network ethereum -- --private-key "$3" \
+    2>"$TMP/propose.err"
+}
+posts() { grep -c '^POST' "$STUB/log" 2>/dev/null || true; }
+
+stub_state 7 '[]'
+out=$(propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK")
+assert_contains "an empty queue at the nonce is proposed" "$out" "PROPOSE_ACTION=proposed"
+assert_contains "…to the v2 propose endpoint of the checksummed Safe" "$(cat "$STUB/log")" \
+  "POST https://stub.invalid/tx-service/eth/api/v2/safes/$SAFE/multisig-transactions/"
+assert_eq "…carrying the attested hash" "$(jq -r .contractTransactionHash "$STUB/posted.json")" "$E2E_HASH"
+assert_eq "…and the signer as sender" "$(jq -r .sender "$STUB/posted.json")" "$OWNER"
+assert_eq "…with operation and nonce as numbers" \
+  "$(jq -c '[.operation, .nonce] | map(type)' "$STUB/posted.json")" '["number","number"]'
+if cast wallet verify --address "$OWNER" --no-hash "$E2E_HASH" \
+     "$(jq -r .signature "$STUB/posted.json")" >/dev/null 2>&1; then
+  pass "…whose EIP-712 typed-data signature recovers over the derived hash"
+else fail "…whose EIP-712 typed-data signature recovers over the derived hash"; fi
+assert_contains "…sending the API key as a Bearer token" "$(cat "$STUB/auth")" "Authorization: Bearer test-key"
+
+# A flat SafeTx on another chain and operation: cast's typed-data hash must still
+# equal derive.sh's, or propose.sh refuses after signing.
+single_canon="$TMP/single-canon.json"
+bash "$NORMALIZE" --input "$FIX/safe-tx-single.json" >"$single_canon" 2>/dev/null
+stub_state "$(jq -r .nonce "$single_canon")" '[]'
+out=$(propose "$single_canon" "$(safe_tx_hash "$single_canon")" "$OWNER_PK")
+assert_contains "a flat SafeTx signs over the same hash derive.sh computes" "$out" "PROPOSE_ACTION=proposed"
+
+stub_state 7 "$(queued "$E2E_HASH" "$OTHER")"
+out=$(propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK")
+assert_contains "the same hash already queued gets a confirmation" "$out" "PROPOSE_ACTION=confirmed"
+assert_contains "…posted to its confirmations endpoint" "$(cat "$STUB/log")" \
+  "POST https://stub.invalid/tx-service/eth/api/v1/multisig-transactions/$E2E_HASH/confirmations/"
+assert_eq "…carrying only the signature" "$(jq -c keys "$STUB/posted.json")" '["signature"]'
+
+stub_state 7 "$(queued "$E2E_HASH" "${OWNER,,}")"
+out=$(propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK")
+assert_contains "a signer who already confirmed is not asked again" "$out" "PROPOSE_ACTION=already-confirmed"
+assert_eq "…and nothing is posted" "$(posts)" "0"
+
+stub_state 7 "$(queued "$OTHER_HASH" "$OTHER")"
+if propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null; then
+  fail "a different transaction queued at the nonce was ignored"
+else pass "a different transaction queued at the nonce is refused"; fi
+assert_contains "…naming it" "$(cat "$TMP/propose.err")" "$OTHER_HASH"
+assert_eq "…and nothing is posted" "$(posts)" "0"
+
+stub_state 7 '[]'
+if propose "$E2E_CANON" "$E2E_HASH" "$OTHER_PK" >/dev/null; then
+  fail "a non-owner signer was accepted"
+else pass "a signer who is not an owner is refused"; fi
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "$OTHER is not an owner"
+assert_eq "…and nothing is posted" "$(posts)" "0"
+
+stub_state 8 '[]'
+if propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null; then
+  fail "a used nonce was accepted"
+else pass "a nonce the Safe has already used is refused"; fi
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "nonce 7 has been used"
+
+stub_state 7 '[]'
+if propose "$E2E_CANON" "$OTHER_HASH" "$OWNER_PK" >/dev/null; then
+  fail "a canonical file that does not hash to --hash was accepted"
+else pass "a canonical file that does not hash to --hash is refused"; fi
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "not the attested $OTHER_HASH"
+assert_eq "…before any request" "$(cat "$STUB/log" 2>/dev/null)" ""
+
+# Without an override the network name picks the service, and it must agree
+# with the transaction's own chain id.
+rm -f "$STUB/log"
+if PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/lib/propose.sh" --canonical "$E2E_CANON" \
+     --hash "$E2E_HASH" --network optimism -- --private-key "$OWNER_PK" 2>"$TMP/propose.err" >/dev/null; then
+  fail "a network on another chain was accepted"
+else pass "a network whose chain differs from the transaction is refused"; fi
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "is chain 10 but the transaction is for chain 1"
+
+group "attest.sh --propose: only an attested transaction is sent"
+
+sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e-unpinned.toml" >"$TMP/e2e-propose-unpinned.toml"
+rm -f "$STUB/log"
+gate_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" \
+  --config "$TMP/e2e-propose-unpinned.toml" --json --propose -- --private-key "$OWNER_PK" 2>"$TMP/gate.err")
+assert_eq "an unattested claim is NOT ATTESTED under --propose" "$(jq -r .attested <<<"$gate_out")" "false"
+assert_contains "…saying it did not propose" "$(cat "$TMP/gate.err")" "not proposing: the offline checks did not attest"
+assert_eq "…without contacting the service" "$(posts)" "0"
+assert_eq "…and reports no proposal" "$(jq -r .proposal <<<"$gate_out")" "null"
+
+# An attested claim reaches propose.sh with the canonical form and hash it
+# checked. --propose implies --require-live, and the stub serves no live data
+# to safe_hashes.sh, so the run still ends NOT ATTESTED on the live check.
+sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e.toml" >"$TMP/e2e-propose.toml"
+stub_state 7 '[]'
+sent_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
+  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json --propose -- --private-key "$OWNER_PK" \
+  2>"$TMP/sent.err")
+assert_eq "an attested claim is proposed" "$(jq -c .proposal <<<"$sent_out")" \
+  "{\"action\":\"proposed\",\"sender\":\"$OWNER\"}"
+assert_eq "…as the hash attest.sh derived" "$(jq -r .contractTransactionHash "$STUB/posted.json")" "$E2E_HASH"
+assert_contains "…with an origin naming the producer commit" "$(jq -r .origin "$STUB/posted.json")" \
+  "BuildBatch.s.sol:BuildBatch@${PRODUCER_COMMIT:0:12}"
+assert_eq "…and the live check is then required" \
+  "$(jq -r '.failures[]' <<<"$sent_out")" "Safe Transaction Service unreachable or no tx at nonce 7"
+
+if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/gate.err"; then
+  fail "--propose without wallet flags was accepted"
+else pass "--propose without wallet flags is refused"; fi
+assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
 
 group "skills/build-safe-tx: the producer template"
 
