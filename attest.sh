@@ -429,7 +429,11 @@ fi
 # --- verdict ------------------------------------------------------------------
 # The JSON document goes to fd 3 (real stdout under --json, /dev/null otherwise),
 # so this runs unconditionally and the two report formats cannot drift apart.
+# Failures go in as one JSON array: as positional args, one starting with `-`
+# would be parsed as a jq option.
+failures_json=$(printf '%s\n' "${FAILURES[@]+"${FAILURES[@]}"}" | jq -cRn '[inputs | select(. != "")]')
 jq -n \
+  --argjson failures "$failures_json" \
   --argjson attested "$([[ ${#FAILURES[@]} -eq 0 ]] && echo true || echo false)" \
   --arg producer_repo   "$producer_repo" \
   --arg producer_commit "$producer_commit" \
@@ -454,7 +458,7 @@ jq -n \
   --arg child_safe_tx    "$child_hash" \
   --arg proposal_action  "$proposal_action" \
   --arg proposal_sender  "$proposal_sender" \
-  --args '
+  '
     {
       attested: $attested,
       producer: { repo: $producer_repo, commit: $producer_commit, script: $producer_script },
@@ -477,8 +481,8 @@ jq -n \
       proposal: (if $proposal_action == "" then null else
         { action: $proposal_action, sender: $proposal_sender }
       end),
-      failures: $ARGS.positional
-    }' "${FAILURES[@]+"${FAILURES[@]}"}" >&3
+      failures: $failures
+    }' >&3
 
 echo
 if [[ ${#FAILURES[@]} -eq 0 ]]; then
