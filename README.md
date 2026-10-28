@@ -33,7 +33,9 @@ script it runs, and the exact outputs that commit must produce. Given one,
 
 If all active checks pass, the submitted Safe tx is provably the script's output. If
 anything was changed (the script, the JSON, or the queued tx) at least one hash
-diverges. The run then prints **`NOT ATTESTED`** and exits non-zero.
+diverges. The run then prints **`NOT ATTESTED`** and exits non-zero. It does the
+same when no `expected_*` hash is pinned, since nothing then ties the output to one
+anyone reviewed.
 
 ## Usage
 
@@ -302,7 +304,8 @@ safe_nonce   = "<nonce>"
 ```
 
 To get the pinned values the first time, run once with them blank. The orchestrator
-prints every hash it computes. Paste those back in as the expectation *after
+prints every hash it computes, and reports `NOT ATTESTED` because nothing is pinned
+yet. Paste those back in as the expectation *after
 reviewing the transaction*. See
 [`attest.batch.example.toml`](attest.batch.example.toml) for a fully commented batch
 claim.
