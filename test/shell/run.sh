@@ -445,6 +445,12 @@ nonce_rc=$?
 if [[ $nonce_rc -ne 0 ]]; then pass "re-binding the batch to another nonce is NOT ATTESTED"
 else fail "a nonce change went undetected"; fi
 
+# forge test exits 0 when nothing matches, so a cross-check pointed at no tests
+# must not count as agreement.
+notest_out=$(FOUNDRY_NO_MATCH_TEST=test_SafeTxHashMatchesExpected bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --json 2>/dev/null)
+assert_eq "a Solidity cross-check that runs no test is NOT ATTESTED" \
+  "$(jq -r '.failures[]' <<<"$notest_out")" "Solidity cross-check ran no test: it wrote no hash"
+
 # With nothing pinned, cast agreeing with Solidity is the only check left, and
 # that ties the output to nothing anyone reviewed.
 write_config "$TMP/e2e-unpinned.toml" "" ""

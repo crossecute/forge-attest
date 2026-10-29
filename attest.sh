@@ -316,7 +316,7 @@ step "Cross-checking Safe tx hash (Solidity)"
 mkdir -p "$SCRIPT_DIR/out"
 cp "$out_json" "$SCRIPT_DIR/out/producer-tx.json"
 cp "$canonical" "$SCRIPT_DIR/out/canonical-safe-tx.json"
-rm -f "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt"
+rm -f "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" "$SCRIPT_DIR/out/solidity-child-safe-tx-hash.txt"
 if ATTEST_JSON="out/producer-tx.json" \
    ATTEST_EXPECTED_SAFE_TX_HASH="${expected_hash:-$cast_hash}" \
    ATTEST_SAFE="$safe_address" \
@@ -335,7 +335,11 @@ if ATTEST_JSON="out/producer-tx.json" \
      forge test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
   sol_hash=$(lc "$(cat "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" 2>/dev/null || echo '')")
   printf '    safeTx   : %s\n' "${sol_hash:-<unavailable>}"
-  if [[ -n "$sol_hash" && "$sol_hash" != "$cast_hash" ]]; then
+  # forge test exits 0 when no test matches (FOUNDRY_NO_MATCH_TEST set in the
+  # environment, say), so only the written hash shows the check ran.
+  if [[ -z "$sol_hash" ]]; then
+    record_fail "Solidity cross-check ran no test: it wrote no hash"
+  elif [[ "$sol_hash" != "$cast_hash" ]]; then
     record_fail "Solidity hash ($sol_hash) != cast hash ($cast_hash)"
   else
     ok "Solidity agrees with cast${expected_hash:+ and pinned expectation}"
