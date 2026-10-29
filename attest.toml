@@ -74,7 +74,8 @@ expected_safe_tx_hash     = "0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27
 # them here is what binds the batch to one specific transaction.
 #
 # `safe_network` additionally enables the live comparison against the Safe
-# Transaction Service. Leave it blank to skip that check. The demo Safe/nonce
+# Transaction Service. Leave it blank to skip that check (under --require-live,
+# a blank safe_network, safe_address or safe_nonce fails instead). The demo Safe/nonce
 # below are illustrative and will simply be skipped when no such transaction
 # exists on the service.
 safe_network = "ethereum"

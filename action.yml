@@ -20,8 +20,9 @@ inputs:
     default: attest.toml
   require-live:
     description: >
-      Fail when the Safe Transaction Service is unreachable or has no transaction
-      queued at the configured nonce. Off by default so a run still attests the
+      Fail when the Safe Transaction Service is unreachable, has no transaction
+      queued at the configured nonce, or the claim leaves safe_network,
+      safe_address or safe_nonce blank. Off by default so a run still attests the
       script output when the service is down; turn it on to gate a live queue.
     required: false
     default: "false"
