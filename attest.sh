@@ -73,6 +73,14 @@ for bin in git forge cast jq sha256sum; do
   command -v "$bin" >/dev/null 2>&1 || die "required tool not found: $bin"
 done
 
+# The claim is flat. toml_get ignores [table] headers and takes the first match of
+# a key, so a header or a repeated key would read one way to a reviewer or a TOML
+# parser and another way to this script.
+grep -qE '^[[:space:]]*\[' "$CONFIG" \
+  && die "config: [table] headers are not supported; the claim is a flat list of keys"
+dup_keys=$(sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$CONFIG" | sort | uniq -d)
+[[ -z "$dup_keys" ]] || die "config: key set more than once: $(echo $dup_keys)"
+
 # --- load config --------------------------------------------------------------
 producer_repo=$(toml_get "$CONFIG" producer_repo)
 producer_commit=$(toml_get "$CONFIG" producer_commit)
@@ -113,6 +121,12 @@ expected_forge_version=$(toml_get "$CONFIG" expected_forge_version)
 [[ -n "$producer_commit" ]] || die "config: producer_commit is required"
 [[ -n "$producer_script" ]] || die "config: producer_script is required"
 [[ -n "$output_path"     ]] || die "config: output_path is required"
+# Checked before git sees it: a value starting with `-` would be read as an option.
+[[ "$producer_commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+  || die "config: producer_commit must be a full lowercase commit SHA"
+# output_path is deleted and then read, so it must name a file inside the clone.
+[[ "$output_path" != /* && "/$output_path/" != */../* ]] \
+  || die "config: output_path must be relative to the producer repo, without '..'"
 
 FAILURES=()
 record_fail() { FAILURES+=("$1"); fail "$1"; }
@@ -158,7 +172,7 @@ echo
 
 # --- 1. clone the producer at the pinned commit -------------------------------
 step "Cloning producer at pinned commit"
-git clone --quiet "$producer_repo" "$WORK/repo" || die "git clone failed: $producer_repo"
+git clone --quiet -- "$producer_repo" "$WORK/repo" || die "git clone failed: $producer_repo"
 git -C "$WORK/repo" checkout --quiet "$producer_commit" 2>/dev/null \
   || die "commit not found in producer repo: $producer_commit"
 actual_commit=$(git -C "$WORK/repo" rev-parse HEAD)
@@ -182,6 +196,17 @@ fi
 
 # --- 2. run the producer's Forge script ---------------------------------------
 step "Running the Forge script"
+repo_real=$(cd "$WORK/repo" && pwd -P)
+# A directory the producer commits as a symlink can point output_path outside the
+# clone, where the rm below would delete a file and the read would attest one the
+# script never wrote.
+inside_clone() { # <path relative to the clone>
+  local dir="$WORK/repo/$(dirname "$1")"
+  [[ -d "$dir" ]] || return 0
+  [[ "$(cd "$dir" && pwd -P)/" == "$repo_real/"* ]] \
+    || die "output_path resolves outside the producer repo: $1"
+}
+inside_clone "$output_path"
 (
   cd "$WORK/repo"
   # A copy committed at the pinned commit would otherwise pass for the script's
@@ -194,7 +219,8 @@ step "Running the Forge script"
     || { cat "$WORK/forge.err" >&2; exit 1; }
 ) || die "forge script failed (see error above)"
 out_json="$WORK/repo/$output_path"
-[[ -f "$out_json" ]] || die "script did not produce expected output: $output_path"
+inside_clone "$output_path"
+[[ -f "$out_json" && ! -L "$out_json" ]] || die "script did not produce expected output: $output_path"
 ok "produced $output_path"
 
 # --- 3. source integrity: sha256 of the emitted JSON --------------------------

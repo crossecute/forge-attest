@@ -531,6 +531,54 @@ regen_out=$(bash "$ROOT/attest.sh" --config "$TMP/regen.toml" 2>&1)
 if [[ $? -eq 0 ]]; then pass "a committed output the script rewrites is attested as rewritten"
 else fail "a committed output the script rewrites is attested as rewritten"$'\n'"$(sed 's/^/      /' <<<"$regen_out")"; fi
 
+group "attest.sh: the claim is read one way only"
+
+claim_err() { # <config> -> combined output; the run must fail
+  local out
+  out=$(bash "$ROOT/attest.sh" --config "$1" 2>&1) && echo "UNEXPECTED SUCCESS"
+  printf '%s' "$out"
+}
+
+{ cat "$TMP/e2e.toml"; echo 'expected_safe_tx_hash = "0x00"'; } >"$TMP/dup.toml"
+assert_contains "a key set twice is refused" "$(claim_err "$TMP/dup.toml")" \
+  "key set more than once: expected_safe_tx_hash"
+
+{ cat "$TMP/e2e.toml"; echo '[extra]'; } >"$TMP/table.toml"
+assert_contains "a [table] header is refused" "$(claim_err "$TMP/table.toml")" \
+  "[table] headers are not supported"
+
+sed "s|^producer_commit .*|producer_commit = \"${PRODUCER_COMMIT:0:12}\"|" "$TMP/e2e.toml" >"$TMP/short.toml"
+assert_contains "an abbreviated producer_commit is refused" "$(claim_err "$TMP/short.toml")" \
+  "producer_commit must be a full lowercase commit SHA"
+
+sed 's|^producer_commit .*|producer_commit = "--orphan=x"|' "$TMP/e2e.toml" >"$TMP/opt.toml"
+assert_contains "a producer_commit shaped like a git option is refused" "$(claim_err "$TMP/opt.toml")" \
+  "producer_commit must be a full lowercase commit SHA"
+
+sed 's|^output_path .*|output_path     = "out/../../batch.json"|' "$TMP/e2e.toml" >"$TMP/dotdot.toml"
+assert_contains "an output_path with '..' is refused" "$(claim_err "$TMP/dotdot.toml")" \
+  "output_path must be relative"
+
+# A producer that commits its output directory as a symlink to elsewhere: the
+# file there must be neither deleted nor attested.
+LINKED="$TMP/linked-producer"
+mkdir -p "$LINKED" "$TMP/outside"
+cp -r "$PRODUCER/script" "$PRODUCER/foundry.toml" "$LINKED/"
+ln -s "$TMP/outside" "$LINKED/out"
+echo keep >"$TMP/outside/batch.json"
+(
+  cd "$LINKED"
+  git init --quiet
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit --quiet -m "symlinked out/"
+) >/dev/null 2>&1
+sed -e "s|^producer_repo .*|producer_repo   = \"file://$LINKED\"|" \
+    -e "s|^producer_commit .*|producer_commit = \"$(git -C "$LINKED" rev-parse HEAD)\"|" \
+    "$TMP/e2e.toml" >"$TMP/linked.toml"
+assert_contains "an output_path behind a symlink out of the clone is refused" \
+  "$(claim_err "$TMP/linked.toml")" "output_path resolves outside the producer repo"
+assert_eq "…and the file it points at is left alone" "$(cat "$TMP/outside/batch.json")" "keep"
+
 group "attest.sh: a nested claim"
 
 cat "$TMP/e2e.toml" >"$TMP/e2e-nested.toml"
