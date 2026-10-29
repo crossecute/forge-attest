@@ -407,6 +407,9 @@ claude --plugin-dir ./forge-attest
   output → sha256 + hash mismatch).
 - The JSON was hand-edited after the script ran (`to`, `value`, `data`, `nonce`, …)
   → derived hash diverges.
+- An output file committed in the producer repo that the script no longer
+  writes → `output_path` is deleted from the clone before the script runs, so
+  the run fails rather than attesting the committed copy.
 - A batch was edited: a transaction added, removed, reordered, redirected, or its
   calldata altered → the `multiSend` payload and therefore the signed hash change.
 - The batch was re-bound to a different Safe, nonce or chain → different hash.

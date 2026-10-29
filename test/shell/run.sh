@@ -461,6 +461,76 @@ if bash "$ROOT/attest.sh" --config "$TMP/e2e-hash-only.toml" >/dev/null 2>&1; th
   pass "pinning expected_safe_tx_hash alone is enough to attest"
 else fail "pinning expected_safe_tx_hash alone is enough to attest"; fi
 
+group "attest.sh: an output file committed at the pinned commit"
+
+# Producers such as frax-oft-upgradeable commit their generated JSON, and some
+# write it only conditionally. The committed copy here is tampered: it moves the
+# transfer to 0xBAD. Only a file the script itself wrote may be attested.
+STALE="$TMP/stale-producer"
+mkdir -p "$STALE/script" "$STALE/out"
+cp "$PRODUCER/foundry.toml" "$STALE/foundry.toml"
+cat >"$STALE/script/Committed.s.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+interface Vm {
+    function projectRoot() external view returns (string memory);
+    function writeFile(string calldata path, string calldata data) external;
+}
+
+contract NoWrite {
+    function run() external {}
+}
+
+contract Write {
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    function run() external {
+        vm.writeFile(
+            string.concat(vm.projectRoot(), "/out/committed.json"),
+            '{"version":"1.0","chainId":1,"transactions":[{"to":"0x000000000000000000000000000000000000dEaD","value":"1","data":"0x","operation":"0"}]}\n'
+        );
+    }
+}
+EOF
+printf '{"version":"1.0","chainId":1,"transactions":[{"to":"0x0000000000000000000000000000000000000BAD","value":"1","data":"0x","operation":"0"}]}\n' \
+  >"$STALE/out/committed.json"
+printf 'forge-out/\ncache/\n' >"$STALE/.gitignore"
+(
+  cd "$STALE"
+  git init --quiet
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit --quiet -m "producer with a committed output"
+) >/dev/null 2>&1
+
+stale_config() { # <path> <script contract> <json to pin from>
+  local canon="$TMP/stale-canonical.json"
+  bash "$NORMALIZE" --input "$3" --safe "$SAFE" --nonce 7 >"$canon" 2>/dev/null
+  sed -e "s|^producer_repo .*|producer_repo   = \"file://$STALE\"|" \
+      -e "s|^producer_commit .*|producer_commit = \"$(git -C "$STALE" rev-parse HEAD)\"|" \
+      -e "s|^producer_script .*|producer_script = \"script/Committed.s.sol:$2\"|" \
+      -e "s|^output_path .*|output_path     = \"out/committed.json\"|" \
+      -e "s|^expected_canonical_sha256 .*|expected_canonical_sha256 = \"$(canonical_sha <"$canon")\"|" \
+      -e "s|^expected_safe_tx_hash .*|expected_safe_tx_hash     = \"$(safe_tx_hash "$canon")\"|" \
+      "$TMP/e2e.toml" >"$1"
+}
+
+# Pinned from the committed file, as an operator's first run would have done.
+stale_config "$TMP/stale.toml" NoWrite "$STALE/out/committed.json"
+stale_out=$(bash "$ROOT/attest.sh" --config "$TMP/stale.toml" 2>&1)
+if [[ $? -ne 0 ]]; then pass "a committed output the script did not write is not attested"
+else fail "a committed output the script did not write was attested"; fi
+assert_contains "…saying the script did not produce it" "$stale_out" "script did not produce expected output"
+
+# Clearing the path must not break a script that does write it: the
+# regenerated file, not the committed one, is what gets attested.
+printf '{"version":"1.0","chainId":1,"transactions":[{"to":"0x000000000000000000000000000000000000dEaD","value":"1","data":"0x","operation":"0"}]}\n' \
+  >"$TMP/regenerated.json"
+stale_config "$TMP/regen.toml" Write "$TMP/regenerated.json"
+regen_out=$(bash "$ROOT/attest.sh" --config "$TMP/regen.toml" 2>&1)
+if [[ $? -eq 0 ]]; then pass "a committed output the script rewrites is attested as rewritten"
+else fail "a committed output the script rewrites is attested as rewritten"$'\n'"$(sed 's/^/      /' <<<"$regen_out")"; fi
+
 group "attest.sh: a nested claim"
 
 cat "$TMP/e2e.toml" >"$TMP/e2e-nested.toml"
