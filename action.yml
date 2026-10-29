@@ -83,6 +83,11 @@ runs:
       run: |
         set -uo pipefail
 
+        # RUNNER_TEMP is per job and private to the runner user; /tmp is shared
+        # on a self-hosted runner.
+        out="$RUNNER_TEMP/forge-attest"
+        rm -rf "$out" && mkdir -p "$out"
+
         config="$CONFIG"
         [[ "$config" = /* ]] || config="$GITHUB_WORKSPACE/$config"
         [[ -f "$config" ]] || { echo "::error::config not found: $CONFIG"; exit 1; }
@@ -92,13 +97,13 @@ runs:
 
         # stdout is the verdict document; stderr is the human report, which is
         # echoed straight through so it streams into the job log.
-        "$ACTION_PATH/attest.sh" "${args[@]}" >/tmp/attest.json 2>/tmp/attest.log
+        "$ACTION_PATH/attest.sh" "${args[@]}" >"$out/attest.json" 2>"$out/attest.log"
         rc=$?
-        cat /tmp/attest.log >&2
+        cat "$out/attest.log" >&2
 
         # A crash before the verdict leaves no document to read; say so plainly
         # rather than emitting empty outputs that look like a clean run.
-        if [[ ! -s /tmp/attest.json ]]; then
+        if [[ ! -s "$out/attest.json" ]]; then
           echo "::error::forge-attest exited $rc without producing a verdict"
           exit "${rc:-1}"
         fi
@@ -110,12 +115,12 @@ runs:
         delim="FORGE_ATTEST_$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
 
         {
-          echo "attested=$(jq -r '.attested'                  /tmp/attest.json)"
-          echo "safe-tx-hash=$(jq -r '.hashes.safe_tx'        /tmp/attest.json)"
-          echo "canonical-sha256=$(jq -r '.hashes.canonical_sha256' /tmp/attest.json)"
-          echo "child-safe-tx-hash=$(jq -r '.nested.safe_tx // ""'  /tmp/attest.json)"
+          echo "attested=$(jq -r '.attested'                  "$out/attest.json")"
+          echo "safe-tx-hash=$(jq -r '.hashes.safe_tx'        "$out/attest.json")"
+          echo "canonical-sha256=$(jq -r '.hashes.canonical_sha256' "$out/attest.json")"
+          echo "child-safe-tx-hash=$(jq -r '.nested.safe_tx // ""'  "$out/attest.json")"
           echo "json<<$delim"
-          cat /tmp/attest.json
+          cat "$out/attest.json"
           echo "$delim"
         } >> "$GITHUB_OUTPUT"
 
@@ -126,41 +131,54 @@ runs:
       shell: bash
       run: |
         set -uo pipefail
-        [[ -s /tmp/attest.json ]] || exit 0
+        out="$RUNNER_TEMP/forge-attest"
+        [[ -s "$out/attest.json" ]] || exit 0
+
+        # The verdict carries config-derived strings, and on a fork PR the config
+        # is attacker-controlled. text escapes Markdown; code is for code spans,
+        # where escapes do not apply, so it drops what would end the span or cell.
+        defs='
+          def text: gsub("[[:cntrl:]]"; " ") | gsub("(?<c>[\\\\`*_\\[\\]<>|#~!])"; "\\\(.c)");
+          def code: gsub("[[:cntrl:]`|]"; " ");'
+        v() { jq -r "$defs $1" "$out/attest.json"; }
 
         {
-          if [[ "$(jq -r '.attested' /tmp/attest.json)" == "true" ]]; then
+          if [[ "$(v '.attested')" == "true" ]]; then
             echo "### ✅ ATTESTED"
             echo
             echo "The queued Safe transaction is exactly the output of the pinned script."
           else
             echo "### ❌ NOT ATTESTED"
             echo
-            jq -r '.failures[] | "- \(.)"' /tmp/attest.json
+            v '.failures[] | "- \(text)"'
           fi
 
           echo
-          jq -r '
+          v '
             "| | |",
             "|---|---|",
-            "| safeTxHash | `\(.hashes.safe_tx)` |",
-            "| canonical sha256 | `\(.hashes.canonical_sha256)` |",
-            "| Safe | `\(.safe.address)` @ nonce \(.safe.nonce) |",
-            "| producer | `\(.producer.script)` @ `\(.producer.commit[0:12])` |"
-          ' /tmp/attest.json
+            "| safeTxHash | `\(.hashes.safe_tx | code)` |",
+            "| canonical sha256 | `\(.hashes.canonical_sha256 | code)` |",
+            "| Safe | `\(.safe.address | code)` @ nonce \(.safe.nonce | text) |",
+            "| producer | `\(.producer.script | code)` @ `\(.producer.commit[0:12] | code)` |"
+          '
 
-          if [[ "$(jq -r '.nested // ""' /tmp/attest.json)" != "" ]]; then
+          if [[ "$(v '.nested // ""')" != "" ]]; then
             echo
-            jq -r '"Nested: the child Safe `\(.nested.safe)` signs `\(.nested.safe_tx)` at nonce \(.nested.nonce)."' \
-              /tmp/attest.json
+            v '"Nested: the child Safe `\(.nested.safe | code)` signs `\(.nested.safe_tx | code)` at nonce \(.nested.nonce | text)."'
           fi
+
+          # A fence longer than any backtick run in the report, so the report
+          # cannot close it.
+          fence='```'
+          while grep -qF "$fence" "$out/attest.log"; do fence+='`'; done
 
           echo
           echo "<details><summary>Full report</summary>"
           echo
-          echo '```'
-          sed -E 's/\x1b\[[0-9;]*m//g' /tmp/attest.log
-          echo '```'
+          echo "$fence"
+          sed -E 's/\x1b\[[0-9;]*m//g' "$out/attest.log"
+          echo "$fence"
           echo
           echo "</details>"
         } >> "$GITHUB_STEP_SUMMARY"
