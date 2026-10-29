@@ -29,7 +29,7 @@ script it runs, and the exact outputs that commit must produce. Given one,
 | 2 | **Canonical integrity** | Does it describe the same transaction, whatever the producer's formatting? | Fold the JSON into one canonical `SafeTx` and assert *its* `sha256` matches. Stable across timestamps, key order and hex casing. Use this pin when a producer does not emit the same bytes every run. |
 | 3 | **Hash derivation (cast)** | Does that map to exactly one Safe tx? | Recompute the EIP-712 `safeTxHash` from the canonical form with `cast`; assert it equals the pinned `expected_safe_tx_hash`. |
 | 4 | **Hash cross-check (Solidity)** | Is the derivation itself trustworthy? | A `forge test` re-reads the *producer's* JSON, redoes the folding and recomputes the same hash in Solidity, asserting it agrees with #3 and the pinned value. No single implementation is trusted, and normalisation itself is covered. |
-| 5 | **Live integrity** | Is the tx *actually queued in the Safe* the same one? | Run `safe-tx-hashes-util` against the Safe Transaction Service (`--network --address --nonce`) and assert the queued tx's hash equals the script-derived hash. |
+| 5 | **Live integrity** | Is the tx *actually queued in the Safe* the same one? | Run `safe-tx-hashes-util` against the Safe Transaction Service (`--network --address --nonce`) and assert the queued tx's hash equals the script-derived hash, and that no other tx is queued at that nonce. |
 
 If all active checks pass, the submitted Safe tx is provably the script's output. If
 anything was changed (the script, the JSON, or the queued tx) at least one hash
@@ -327,7 +327,6 @@ error pointing at the real cause.
 - Nesting more than one level deep.
 - EIP-1271 contract signatures, which produce a signature blob rather than a
   reviewable transaction.
-- Several different transactions queued at the same nonce.
 
 ## Pointing it at your own repo
 
@@ -354,6 +353,11 @@ yet. Paste those back in as the expectation *after
 reviewing the transaction*. See
 [`attest.batch.example.toml`](attest.batch.example.toml) for a fully commented batch
 claim.
+
+The claim is a flat list of `key = value` lines. `[table]` headers and repeated
+keys are refused, because this reader and a TOML parser would disagree about
+which value counts. `producer_commit` must be the full commit SHA, and
+`output_path` a path inside the producer repo.
 
 ## Building transactions from a prompt
 
@@ -415,17 +419,25 @@ claude --plugin-dir ./forge-attest
 - The batch was re-bound to a different Safe, nonce or chain → different hash.
 - The tx queued in the Safe differs from the script output → live hash mismatch
   (check #5).
+- Another transaction queued at the same nonce, on the Safe or (with
+  `child_network`) on the child → `NOT ATTESTED` even without `--require-live`,
+  since the owners could sign the other one. `--propose` refuses the same state.
 - A nested approval pointing at a different transaction than the one under review.
   The approval is re-derived from the parent, never read back from it.
 
 **Trusts, and why that is safe**
-- The Safe Transaction Service (check #5) is queried over the network, but a
-  compromised or impersonated service can only cause a false *negative*. The
-  comparison is against a hash this tool derived offline from the script's own
-  output. Producing a false *positive* means returning exactly that hash, which
-  requires already knowing the honest answer and gains an attacker nothing. Treat
-  an unreachable service as an unknown, not as a pass. That is what
-  `--require-live` is for.
+- The Safe Transaction Service (check #5) is queried over the network and is not
+  trusted to be honest. The comparison is against a hash this tool derived
+  offline, so a service that misreports the queue makes the run fail rather than
+  pass, unless it reports exactly the attested transaction. A compromised service
+  can do that while showing owners something else, because the attested
+  transaction is public in the claim. A live pass therefore means "the service
+  reports this transaction, and only this one, at this nonce". What binds the
+  signature is the owner comparing the `safeTxHash` on their hardware wallet with
+  the pinned `expected_safe_tx_hash`. The live hash is read only from the
+  checker's own result line, and its output is filtered to printable text before
+  it is shown. Treat an unreachable service as an unknown, not as a pass. That is
+  what `--require-live` is for.
 - Under `--propose`, the same service also reports the Safe's owners, nonce and
   queue, which decide whether to propose, confirm or refuse. A lying service can
   make the run refuse, or send a signature over the attested hash to a service
@@ -476,6 +488,13 @@ cases deserve care.
 
 The same applies to `producer_repo`: it is cloned and its build is run. Point it at
 a repo you control.
+
+The producer's setup and script run as the same user as forge-attest, with the
+same environment except `SAFE_API_KEY`. Nothing stops them from changing
+forge-attest's own files before its checks run, so a run is only as trustworthy as
+the producer commit and the dependencies its setup fetches. Run a producer you have
+not reviewed in a disposable container. Either way, the signer's final check is the
+`safeTxHash` on their hardware wallet against the pinned `expected_safe_tx_hash`.
 
 ## Tests
 
