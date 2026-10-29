@@ -228,6 +228,8 @@ inside_clone() { # <path relative to the clone>
 inside_clone "$output_path"
 (
   cd "$WORK/repo"
+  # The producer's setup and script need no Safe API credentials.
+  unset SAFE_API_KEY
   # A copy committed at the pinned commit would otherwise pass for the script's
   # output when the script exits 0 without writing it. Setup runs after, so a
   # file it writes is still attested, as the reviewed claim asks.

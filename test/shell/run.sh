@@ -537,6 +537,11 @@ regen_out=$(bash "$ROOT/attest.sh" --config "$TMP/regen.toml" 2>&1)
 if [[ $? -eq 0 ]]; then pass "a committed output the script rewrites is attested as rewritten"
 else fail "a committed output the script rewrites is attested as rewritten"$'\n'"$(sed 's/^/      /' <<<"$regen_out")"; fi
 
+sed "s|^producer_setup .*|producer_setup  = \"printenv SAFE_API_KEY >'$TMP/leak' \|\| true\"|" \
+  "$TMP/e2e.toml" >"$TMP/leak.toml"
+SAFE_API_KEY=test-key bash "$ROOT/attest.sh" --config "$TMP/leak.toml" >/dev/null 2>&1
+assert_eq "the producer's setup does not see SAFE_API_KEY" "$(cat "$TMP/leak" 2>/dev/null || echo missing)" ""
+
 group "attest.sh: the claim is read one way only"
 
 claim_err() { # <config> -> combined output; the run must fail
