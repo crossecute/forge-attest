@@ -95,8 +95,7 @@ api() {
 expect() { # <status> <allowed...>
   local got="$1"; shift
   for want in "$@"; do [[ "$got" == "$want" ]] && return 0; done
-  # Printable ASCII only: the body could carry escapes that rewrite the terminal.
-  die "Safe Transaction Service returned HTTP $got: $(head -c 400 "$TMP/resp" 2>/dev/null | LC_ALL=C tr -cd '\40-\176')"
+  die "Safe Transaction Service returned HTTP $got: $(head -c 400 "$TMP/resp" 2>/dev/null | printable | tr -d '\11\12')"
 }
 # The service is untrusted. Each value bash evaluates or prints is checked
 # against its shape first; arithmetic on a raw string runs command substitutions
