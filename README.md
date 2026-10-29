@@ -431,7 +431,10 @@ claude --plugin-dir ./forge-attest
   make the run refuse, or send a signature over the attested hash to a service
   that discards it. It cannot change what is signed: the typed data is built from
   the attested canonical form, and the signature is checked against the attested
-  hash before it leaves the machine.
+  hash before it leaves the machine. Each value it returns that the script
+  evaluates or prints is checked against its expected shape first (a decimal
+  nonce, a 32-byte hash), and error bodies are printed as plain ASCII, so a
+  response cannot run commands or rewrite what the terminal shows.
 - The four offline checks need no network at all beyond cloning the pinned
   producer commit, whose SHA is verified after checkout.
 

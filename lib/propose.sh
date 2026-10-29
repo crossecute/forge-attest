@@ -55,6 +55,8 @@ get() { jq -er "$1" "$canonical"; }
 safe=$(cast to-check-sum-address "$(get .safe)")
 chain_id=$(get .chainId)
 nonce=$(get .nonce)
+# 18 digits keeps the nonce comparison below inside bash's 64-bit arithmetic.
+[[ "$nonce" =~ ^[0-9]{1,18}$ ]] || die "propose.sh: nonce $nonce is not a decimal of at most 18 digits"
 
 # The canonical file must still be the one that was attested.
 eval "$(bash "$SCRIPT_DIR/derive.sh" "$canonical")"
@@ -93,7 +95,14 @@ api() {
 expect() { # <status> <allowed...>
   local got="$1"; shift
   for want in "$@"; do [[ "$got" == "$want" ]] && return 0; done
-  die "Safe Transaction Service returned HTTP $got: $(head -c 400 "$TMP/resp" 2>/dev/null)"
+  # Printable ASCII only: the body could carry escapes that rewrite the terminal.
+  die "Safe Transaction Service returned HTTP $got: $(head -c 400 "$TMP/resp" 2>/dev/null | LC_ALL=C tr -cd '\40-\176')"
+}
+# The service is untrusted. Each value bash evaluates or prints is checked
+# against its shape first; arithmetic on a raw string runs command substitutions
+# in array subscripts, and a printed string can carry terminal escapes.
+shaped() { # <regex> <what> <value>
+  [[ "$3" =~ $1 ]] || die "Safe Transaction Service returned a malformed $2"
 }
 
 [[ -n "${SAFE_API_KEY:-}" ]] || warn "SAFE_API_KEY is not set: the service may reject or rate-limit requests"
@@ -105,6 +114,7 @@ printf '    signer   : %s\n' "$sender"
 
 expect "$(api GET "/v1/safes/$safe/")" 200
 safe_nonce=$(jq -er '.nonce | tostring' "$TMP/resp")
+shaped '^[0-9]{1,18}$' nonce "$safe_nonce"
 jq -e --arg s "${sender,,}" 'any(.owners[]; ascii_downcase == $s)' "$TMP/resp" >/dev/null \
   || die "$sender is not an owner of $safe"
 (( nonce >= safe_nonce )) \
@@ -114,6 +124,9 @@ jq -e --arg s "${sender,,}" 'any(.owners[]; ascii_downcase == $s)' "$TMP/resp" >
 # rejection, or a substitution). Its owners decide which one runs, not this tool.
 expect "$(api GET "/v2/safes/$safe/multisig-transactions/?nonce=$nonce")" 200
 others=$(jq -r --arg h "$hash" '.results[] | .safeTxHash | ascii_downcase | select(. != $h)' "$TMP/resp")
+[[ -z "$others" ]] || while IFS= read -r other; do
+  shaped '^0x[0-9a-f]{64}$' safeTxHash "$other"
+done <<<"$others"
 [[ -z "$others" ]] \
   || die "another transaction is already queued at nonce $nonce: $(echo $others)"
 queued=$(jq -r --arg h "$hash" '[.results[] | select((.safeTxHash | ascii_downcase) == $h)] | length' "$TMP/resp")
