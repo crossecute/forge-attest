@@ -749,8 +749,18 @@ flat_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.
 assert_eq "a claim without safe_address and safe_nonce is NOT ATTESTED under --propose" \
   "$(jq -r .attested <<<"$flat_out")" "false"
 assert_eq "…failing only for the missing fields" "$(jq -r '.failures[]' <<<"$flat_out")" \
-  "--propose needs safe_network, safe_address and safe_nonce"
+  "--propose needs safe_network, safe_address and safe_nonce"$'\n'"safe_network/address/nonce not fully set: live check required"
 assert_eq "…without contacting the service" "$(cat "$STUB/log" 2>/dev/null)" ""
+
+# The same gap without --propose: --require-live alone must fail, not skip.
+sed '/^safe_network/d' "$TMP/e2e-propose-flat.toml" >"$TMP/e2e-flat.toml"
+if bash "$ROOT/attest.sh" --config "$TMP/e2e-flat.toml" >/dev/null 2>&1; then
+  pass "a flat claim without safe_network, safe_address and safe_nonce is ATTESTED"
+else fail "a flat claim without safe_network, safe_address and safe_nonce is ATTESTED"; fi
+flat_live_out=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-flat.toml" --json --require-live 2>/dev/null)
+assert_eq "…but NOT ATTESTED under --require-live" "$(jq -r .attested <<<"$flat_live_out")" "false"
+assert_eq "…failing only for the skipped live check" "$(jq -r '.failures[]' <<<"$flat_live_out")" \
+  "safe_network/address/nonce not fully set: live check required"
 
 if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/gate.err"; then
   fail "--propose without wallet flags was accepted"

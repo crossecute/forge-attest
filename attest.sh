@@ -382,8 +382,8 @@ if [[ "$PROPOSE" == 1 ]]; then
   elif (( ${#FAILURES[@]} )); then
     record_fail "not proposing: the offline checks did not attest"
   elif [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
-    # The live check below skips without all three, and it is what proves the
-    # submission landed.
+    # The live check below cannot run without all three, and it is what proves
+    # the submission landed. Its failure would come only after the send.
     record_fail "--propose needs safe_network, safe_address and safe_nonce"
   elif propose_out=$(bash "$SCRIPT_DIR/lib/propose.sh" \
       --canonical "$canonical" --hash "$cast_hash" --network "$safe_network" \
@@ -400,7 +400,14 @@ fi
 # --- 8. live integrity: compare against the Safe Transaction Service ----------
 step "Live check against Safe Transaction Service"
 if [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
-  warn "safe_network/address/nonce not fully set: skipping live check"
+  # A flat SafeTx carries its own Safe and nonce, so a claim for one can attest
+  # with these blank. That is a live check that cannot run, not one that passed.
+  msg="safe_network/address/nonce not fully set"
+  if [[ "$REQUIRE_LIVE" == 1 ]]; then
+    record_fail "$msg: live check required"
+  else
+    warn "$msg: skipping live check"
+  fi
 else
   # Run errexit-free: the tool and the hash-parsing pipes may legitimately fail
   # (offline, or no tx queued at that nonce) and that must not abort attestation.
