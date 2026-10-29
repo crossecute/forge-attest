@@ -184,6 +184,10 @@ fi
 step "Running the Forge script"
 (
   cd "$WORK/repo"
+  # A copy committed at the pinned commit would otherwise pass for the script's
+  # output when the script exits 0 without writing it. Setup runs after, so a
+  # file it writes is still attested, as the reviewed claim asks.
+  rm -f "$output_path"
   [[ -n "$producer_setup" ]] && { echo "    setup: $producer_setup"; bash -c "$producer_setup"; }
   mkdir -p "$(dirname "$output_path")"
   forge script "$producer_script" >/dev/null 2>"$WORK/forge.err" \
