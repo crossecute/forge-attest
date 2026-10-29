@@ -426,18 +426,13 @@ claude --plugin-dir ./forge-attest
   The approval is re-derived from the parent, never read back from it.
 
 **Trusts, and why that is safe**
-- The Safe Transaction Service (check #5) is queried over the network and is not
-  trusted to be honest. The comparison is against a hash this tool derived
-  offline, so a service that misreports the queue makes the run fail rather than
-  pass, unless it reports exactly the attested transaction. A compromised service
-  can do that while showing owners something else, because the attested
-  transaction is public in the claim. A live pass therefore means "the service
-  reports this transaction, and only this one, at this nonce". What binds the
-  signature is the owner comparing the `safeTxHash` on their hardware wallet with
-  the pinned `expected_safe_tx_hash`. The live hash is read only from the
-  checker's own result line, and its output is filtered to printable text before
-  it is shown. Treat an unreachable service as an unknown, not as a pass. That is
-  what `--require-live` is for.
+- The Safe Transaction Service (check #5) is queried over the network, but a
+  compromised or impersonated service can only cause a false *negative*. The
+  comparison is against a hash this tool derived offline from the script's own
+  output. Producing a false *positive* means returning exactly that hash, which
+  requires already knowing the honest answer and gains an attacker nothing. Treat
+  an unreachable service as an unknown, not as a pass. That is what
+  `--require-live` is for.
 - Under `--propose`, the same service also reports the Safe's owners, nonce and
   queue, which decide whether to propose, confirm or refuse. A lying service can
   make the run refuse, or send a signature over the attested hash to a service
@@ -488,13 +483,6 @@ cases deserve care.
 
 The same applies to `producer_repo`: it is cloned and its build is run. Point it at
 a repo you control.
-
-The producer's setup and script run as the same user as forge-attest, with the
-same environment except `SAFE_API_KEY`. Nothing stops them from changing
-forge-attest's own files before its checks run, so a run is only as trustworthy as
-the producer commit and the dependencies its setup fetches. Run a producer you have
-not reviewed in a disposable container. Either way, the signer's final check is the
-`safeTxHash` on their hardware wallet against the pinned `expected_safe_tx_hash`.
 
 ## Tests
 
