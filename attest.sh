@@ -131,6 +131,25 @@ expected_forge_version=$(toml_get "$CONFIG" expected_forge_version)
 FAILURES=()
 record_fail() { FAILURES+=("$1"); fail "$1"; }
 
+# live_safe_tx_hash <network> <address> <nonce> <log>
+# Prints the hash safe_hashes.sh computes for the transaction queued at <nonce>,
+# and leaves its sanitised output in <log>. Returns 2 when several transactions
+# are queued there, 1 when no single hash could be read.
+live_safe_tx_hash() {
+  local hashes
+  # With several transactions at one nonce the tool prompts for an index and, on
+  # a closed stdin, re-prompts forever. head bounds that output and ends it.
+  { timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" --network "$1" --address "$2" --nonce "$3"
+    echo "forge-attest: exit $?"; } </dev/null 2>&1 | head -c 1048576 | printable >"$4" || true
+  grep -q 'Several transactions with identical nonce' "$4" && return 2
+  tail -1 "$4" | grep -qx 'forge-attest: exit 0' || return 1
+  # The output also prints service-provided text (decoded calldata), so take only
+  # the tool's own anchored line, and only if there is exactly one.
+  hashes=$(grep -oE '^Safe transaction hash: 0x[0-9a-fA-F]{64}$' "$4" || true)
+  [[ -n "$hashes" && "$hashes" != *$'\n'* ]] || return 1
+  lc "${hashes##* }"
+}
+
 # Set inside conditional blocks below; declared here so the JSON verdict can
 # report them as empty rather than tripping `set -u` on a skipped check.
 sol_hash=""
@@ -369,16 +388,12 @@ if [[ -n "$child_safe" ]]; then
   # The child's own queue, if asked for. Catches a different transaction being
   # queued on the child and presented to its owners as "the approval".
   if [[ -n "$child_network" ]]; then
-    set +e
-    child_out="$WORK/child_hashes.out"
-    timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" \
-      --network "$child_network" --address "$child_safe" --nonce "$child_nonce" \
-      >"$child_out" 2>&1
-    child_rc=$?
-    child_live=$(lc "$(sed -E 's/\x1b\[[0-9;]*m//g' "$child_out" \
-      | grep -iA2 'safe transaction hash' | grep -oiE '0x[a-f0-9]{64}' | tail -1)")
-    set -e
-    if [[ "$child_rc" -ne 0 || -z "$child_live" ]]; then
+    child_rc=0
+    child_live=$(live_safe_tx_hash "$child_network" "$child_safe" "$child_nonce" \
+      "$WORK/child_hashes.out") || child_rc=$?
+    if [[ "$child_rc" == 2 ]]; then
+      record_fail "several transactions are queued on the child at nonce $child_nonce"
+    elif [[ "$child_rc" != 0 ]]; then
       msg="child Safe queue unreachable or nothing at nonce $child_nonce"
       if [[ "$REQUIRE_LIVE" == 1 ]]; then record_fail "$msg"; else warn "$msg: skipping"; fi
     elif [[ "$child_live" == "$child_hash" ]]; then
@@ -435,20 +450,16 @@ if [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
     warn "$msg: skipping live check"
   fi
 else
-  # Run errexit-free: the tool and the hash-parsing pipes may legitimately fail
-  # (offline, or no tx queued at that nonce) and that must not abort attestation.
-  set +e
   live_out="$WORK/safe_hashes.out"
-  timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" \
-    --network "$safe_network" --address "$safe_address" --nonce "$safe_nonce" \
-    >"$live_out" 2>&1
-  live_rc=$?
-  live_hash=$(sed -E 's/\x1b\[[0-9;]*m//g' "$live_out" \
-    | grep -iA2 'safe transaction hash' | grep -oiE '0x[a-f0-9]{64}' | tail -1)
-  live_hash=$(lc "$live_hash")
-  set -e
+  live_rc=0
+  live_hash=$(live_safe_tx_hash "$safe_network" "$safe_address" "$safe_nonce" "$live_out") \
+    || live_rc=$?
 
-  if [[ "$live_rc" -ne 0 || -z "$live_hash" ]]; then
+  if [[ "$live_rc" == 2 ]]; then
+    # A competing transaction is evidence, not an outage: owners shown the queue
+    # could sign the other one. --propose refuses the same state.
+    record_fail "several transactions are queued at nonce $safe_nonce"
+  elif [[ "$live_rc" != 0 ]]; then
     msg="Safe Transaction Service unreachable or no tx at nonce $safe_nonce"
     if [[ "$REQUIRE_LIVE" == 1 ]]; then
       cat "$live_out" >&2; record_fail "$msg"

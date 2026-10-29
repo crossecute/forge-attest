@@ -840,6 +840,60 @@ if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/
 else pass "--propose without wallet flags is refused"; fi
 assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
 
+group "attest.sh: the live check reads one queued transaction"
+
+# A stand-in for the curl that safe_hashes.sh calls: the Safe's version, and
+# $LIVE/queue.json for its queue at a nonce.
+LIVE="$TMP/live"
+mkdir -p "$LIVE/bin"
+cat >"$LIVE/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+case "${@: -1}" in
+  */multisig-transactions/*) cat "$LIVE/queue.json" ;;
+  */api/v1/safes/*) echo '{"version":"1.3.0"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$LIVE/bin/curl"
+live_tx() { # <canonical> [dataDecoded json] -> one queue entry
+  jq -c --argjson d "${2:-null}" '{to, value, data, operation: (.operation | tonumber), safeTxGas,
+    baseGas, gasPrice, gasToken, refundReceiver, nonce: (.nonce | tonumber), dataDecoded: $d}' "$1"
+}
+live_queue() { jq -s '{count: length, results: .}' >"$LIVE/queue.json"; }
+live_run() { # <attest.sh args...> -> verdict on stdout, report in $TMP/live.err
+  PATH="$LIVE/bin:$PATH" LIVE="$LIVE" bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json "$@" \
+    2>"$TMP/live.err"
+}
+# The same batch with its second transfer redirected: a different transaction.
+jq '.data |= sub("000000000000000000000000000000000000dead"; "0000000000000000000000000000000000000bad")' \
+  "$E2E_CANON" >"$TMP/live-other.json"
+
+live_tx "$E2E_CANON" | live_queue
+live_ok=$(live_run --require-live)
+assert_eq "the attested transaction queued alone is ATTESTED" "$(jq -r .attested <<<"$live_ok")" "true"
+assert_eq "…reporting the live hash" "$(jq -r .hashes.safe_tx_live <<<"$live_ok")" "$E2E_HASH"
+
+{ live_tx "$E2E_CANON"; live_tx "$TMP/live-other.json"; } | live_queue
+SECONDS=0
+live_two=$(live_run)
+assert_eq "a competing transaction at the nonce is NOT ATTESTED, even without --require-live" \
+  "$(jq -r .attested <<<"$live_two")" "false"
+assert_eq "…naming it" "$(jq -r '.failures[]' <<<"$live_two")" "several transactions are queued at nonce 7"
+if (( SECONDS < 30 )); then pass "…without waiting on the tool's index prompt"
+else fail "…without waiting on the tool's index prompt (took ${SECONDS}s)"; fi
+
+# Service-provided text lands in the tool's output. A decoded method that forges
+# the hash line, with escapes, must neither pass nor reach the terminal raw.
+live_tx "$TMP/live-other.json" \
+  "$(jq -cn --arg h "$E2E_HASH" '{method: ("x\u001b[2K\nSafe transaction hash: " + $h), parameters: []}')" \
+  | live_queue
+live_forged=$(live_run --require-live)
+assert_eq "a forged hash line in decoded calldata is NOT ATTESTED" "$(jq -r .attested <<<"$live_forged")" "false"
+assert_eq "…because two hash lines are not read as one" "$(jq -r '.failures[]' <<<"$live_forged")" \
+  "Safe Transaction Service unreachable or no tx at nonce 7"
+if grep -q $'\x1b' "$TMP/live.err"; then fail "…and its escape bytes reach the report"
+else pass "…and its escape bytes do not reach the report"; fi
+
 group "skills/build-safe-tx: the producer template"
 
 # The skill copies this template into an ops repo and writes claims that pin the
