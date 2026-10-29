@@ -14,10 +14,15 @@
 #    6. optionally checks that same hash against what is actually
 #       queued in the Safe, via the Safe Transaction Service.         (live integrity)
 #
+#  With --propose, an attested transaction is also signed with the cast wallet
+#  flags given after `--` and submitted to the Safe Transaction Service (proposed,
+#  or confirmed if already queued), and the live check is then required.
+#
 #  Matching hashes across all layers prove the submitted Safe tx is exactly what
 #  the script produced.
 #
 #  Usage: ./attest.sh [--config attest.toml] [--require-live] [--json] [--keep] [--help]
+#                     [--propose -- <cast wallet flags, e.g. --ledger>]
 #
 #  --json emits a machine-readable verdict on stdout and moves the human report
 #  to stderr, so a caller gets both without parsing colours. The exit code is
@@ -32,6 +37,8 @@ CONFIG="$SCRIPT_DIR/attest.toml"
 REQUIRE_LIVE=0
 KEEP=0
 JSON=0
+PROPOSE=0
+PROPOSE_WALLET=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -39,11 +46,18 @@ while [[ $# -gt 0 ]]; do
     --require-live) REQUIRE_LIVE=1; shift ;;
     --json) JSON=1; shift ;;
     --keep) KEEP=1; shift ;;
+    --propose) PROPOSE=1; REQUIRE_LIVE=1; shift ;;
+    --) shift; PROPOSE_WALLET=("$@"); break ;;
     -h|--help)
       grep -E '^#' "$0" | sed -E 's/^#\??//' | sed -E 's/^ //'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
+if [[ "$PROPOSE" == 1 ]]; then
+  (( ${#PROPOSE_WALLET[@]} )) || die "--propose needs the signer's cast wallet flags after --, e.g. -- --ledger"
+elif (( ${#PROPOSE_WALLET[@]} )); then
+  die "wallet flags after -- are only used with --propose"
+fi
 
 # In JSON mode stdout is reserved for the verdict document. Keep a handle on the
 # real stdout (fd 3) and point everything the run prints at stderr, so the human
@@ -345,7 +359,41 @@ if [[ -n "$child_safe" ]]; then
   fi
 fi
 
-# --- 7. live integrity: compare against the Safe Transaction Service ----------
+# Each pin commits to the transaction, so any one anchors the run. With none,
+# the checks above can only compare cast with Solidity, which proves nothing
+# about whether the output is the one someone reviewed.
+if [[ -z "$expected_sha$expected_canonical_sha$expected_hash$expected_child_hash" ]]; then
+  record_fail "no expected hash pinned: nothing ties this output to a reviewed one"
+fi
+
+# --- 7. propose: sign and submit the attested transaction ---------------------
+# Runs only when every offline check passed, so what is signed and sent is the
+# canonical form those checks hashed, never the producer's JSON as given.
+proposal_action=""
+proposal_sender=""
+if [[ "$PROPOSE" == 1 ]]; then
+  step "Proposing to Safe Transaction Service"
+  if [[ -n "$child_safe" ]]; then
+    record_fail "--propose does not support nested claims"
+  elif (( ${#FAILURES[@]} )); then
+    record_fail "not proposing: the offline checks did not attest"
+  elif [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
+    # The live check below skips without all three, and it is what proves the
+    # submission landed.
+    record_fail "--propose needs safe_network, safe_address and safe_nonce"
+  elif propose_out=$(bash "$SCRIPT_DIR/lib/propose.sh" \
+      --canonical "$canonical" --hash "$cast_hash" --network "$safe_network" \
+      --origin "forge-attest ${producer_script}@${producer_commit:0:12}" \
+      -- "${PROPOSE_WALLET[@]}"); then
+    eval "$propose_out"   # sets PROPOSE_ACTION / PROPOSE_SENDER
+    proposal_action="$PROPOSE_ACTION"
+    proposal_sender="$PROPOSE_SENDER"
+  else
+    record_fail "proposal to the Safe Transaction Service failed"
+  fi
+fi
+
+# --- 8. live integrity: compare against the Safe Transaction Service ----------
 step "Live check against Safe Transaction Service"
 if [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
   warn "safe_network/address/nonce not fully set: skipping live check"
@@ -380,17 +428,14 @@ else
   fi
 fi
 
-# Each pin commits to the transaction, so any one anchors the run. With none,
-# the checks above can only compare cast with Solidity, which proves nothing
-# about whether the output is the one someone reviewed.
-if [[ -z "$expected_sha$expected_canonical_sha$expected_hash$expected_child_hash" ]]; then
-  record_fail "no expected hash pinned: nothing ties this output to a reviewed one"
-fi
-
 # --- verdict ------------------------------------------------------------------
 # The JSON document goes to fd 3 (real stdout under --json, /dev/null otherwise),
 # so this runs unconditionally and the two report formats cannot drift apart.
+# Failures go in as one JSON array: as positional args, one starting with `-`
+# would be parsed as a jq option.
+failures_json=$(printf '%s\n' "${FAILURES[@]+"${FAILURES[@]}"}" | jq -cRn '[inputs | select(. != "")]')
 jq -n \
+  --argjson failures "$failures_json" \
   --argjson attested "$([[ ${#FAILURES[@]} -eq 0 ]] && echo true || echo false)" \
   --arg producer_repo   "$producer_repo" \
   --arg producer_commit "$producer_commit" \
@@ -413,7 +458,9 @@ jq -n \
   --arg child_safe       "$child_safe" \
   --arg child_nonce      "$child_nonce" \
   --arg child_safe_tx    "$child_hash" \
-  --args '
+  --arg proposal_action  "$proposal_action" \
+  --arg proposal_sender  "$proposal_sender" \
+  '
     {
       attested: $attested,
       producer: { repo: $producer_repo, commit: $producer_commit, script: $producer_script },
@@ -433,8 +480,11 @@ jq -n \
       nested: (if $child_safe == "" then null else
         { safe: $child_safe, nonce: $child_nonce, safe_tx: $child_safe_tx }
       end),
-      failures: $ARGS.positional
-    }' "${FAILURES[@]+"${FAILURES[@]}"}" >&3
+      proposal: (if $proposal_action == "" then null else
+        { action: $proposal_action, sender: $proposal_sender }
+      end),
+      failures: $failures
+    }' >&3
 
 echo
 if [[ ${#FAILURES[@]} -eq 0 ]]; then
