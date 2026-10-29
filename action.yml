@@ -129,56 +129,10 @@ runs:
     - name: Job summary
       if: always() && inputs.summary == 'true'
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -uo pipefail
         out="$RUNNER_TEMP/forge-attest"
         [[ -s "$out/attest.json" ]] || exit 0
-
-        # The verdict carries config-derived strings, and on a fork PR the config
-        # is attacker-controlled. text escapes Markdown; code is for code spans,
-        # where escapes do not apply, so it drops what would end the span or cell.
-        defs='
-          def text: gsub("[[:cntrl:]]"; " ") | gsub("(?<c>[\\\\`*_\\[\\]<>|#~!])"; "\\\(.c)");
-          def code: gsub("[[:cntrl:]`|]"; " ");'
-        v() { jq -r "$defs $1" "$out/attest.json"; }
-
-        {
-          if [[ "$(v '.attested')" == "true" ]]; then
-            echo "### ✅ ATTESTED"
-            echo
-            echo "The queued Safe transaction is exactly the output of the pinned script."
-          else
-            echo "### ❌ NOT ATTESTED"
-            echo
-            v '.failures[] | "- \(text)"'
-          fi
-
-          echo
-          v '
-            "| | |",
-            "|---|---|",
-            "| safeTxHash | `\(.hashes.safe_tx | code)` |",
-            "| canonical sha256 | `\(.hashes.canonical_sha256 | code)` |",
-            "| Safe | `\(.safe.address | code)` @ nonce \(.safe.nonce | text) |",
-            "| producer | `\(.producer.script | code)` @ `\(.producer.commit[0:12] | code)` |"
-          '
-
-          if [[ "$(v '.nested // ""')" != "" ]]; then
-            echo
-            v '"Nested: the child Safe `\(.nested.safe | code)` signs `\(.nested.safe_tx | code)` at nonce \(.nested.nonce | text)."'
-          fi
-
-          # A fence longer than any backtick run in the report, so the report
-          # cannot close it.
-          fence='```'
-          while grep -qF "$fence" "$out/attest.log"; do fence+='`'; done
-
-          echo
-          echo "<details><summary>Full report</summary>"
-          echo
-          echo "$fence"
-          sed -E 's/\x1b\[[0-9;]*m//g' "$out/attest.log"
-          echo "$fence"
-          echo
-          echo "</details>"
-        } >> "$GITHUB_STEP_SUMMARY"
+        bash "$ACTION_PATH/lib/summary.sh" "$out/attest.json" "$out/attest.log" >> "$GITHUB_STEP_SUMMARY"

@@ -9,6 +9,7 @@
 #   4. propose.sh:       signing and submission against a stubbed Transaction
 #                         Service, and attest.sh --propose refusing unattested txs
 #   5. skills:           the build-safe-tx template is byte-stable and attests
+#   6. summary.sh:       the action's job summary escapes what the claim controls
 #
 # Usage: test/shell/run.sh
 set -uo pipefail
@@ -958,6 +959,21 @@ else fail "a claim pinning the template's byte-exact sha256 is ATTESTED"$'\n'"$(
 # These files feed the hash derivation, so a silent change to either produces a
 # confidently wrong answer rather than an error. VENDORED.md is the record of
 # what they are meant to be; this asserts the bytes still match it.
+group "summary.sh: the job summary escapes what the claim controls"
+
+jq -n '{attested: false, failures: ["x\n### ✅ ATTESTED"],
+  hashes: {safe_tx: "0xab`|c", canonical_sha256: "c"},
+  safe: {address: "0x1", nonce: "7"}, producer: {script: "s", commit: "abc"}, nested: null}' \
+  >"$TMP/verdict.json"
+# Removing the escape joins two 3-backtick runs into one 6-backtick line.
+printf 'line\n```\033[0m```\n# injected\n' >"$TMP/report.log"
+summary=$(bash "$ROOT/lib/summary.sh" "$TMP/verdict.json" "$TMP/report.log")
+assert_contains "a failure cannot start a heading" "$summary" "- x \#\#\# ✅ ATTESTED"
+assert_contains "a code-span cell cannot be ended or split" "$summary" "| safeTxHash | \`0xab  c\` |"
+assert_eq "the report's fence is longer than any backtick run it renders" \
+  "$(grep -cxE '`{7}' <<<"$summary")" "2"
+assert_contains "…so the report's lines stay inside it" "$summary" $'``````\n# injected\n```````'
+
 group "Vendored files match VENDORED.md"
 
 check_vendored() { # file

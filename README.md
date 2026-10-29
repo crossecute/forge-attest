@@ -523,6 +523,7 @@ forge-attest/
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
 │   ├── propose.sh                # signs and submits an attested tx (--propose)
+│   ├── summary.sh                # renders the verdict as the action's job summary
 │   ├── common.sh                 # logging + tiny TOML reader
 │   └── VENDORED.md               # provenance of the vendored tool
 ├── .claude-plugin/               # Claude Code plugin and marketplace manifests
