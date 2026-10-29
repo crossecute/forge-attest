@@ -592,7 +592,7 @@ done
 echo "$method $url" >>"$STUB/log"
 [[ -n "$auth" ]] && echo "$auth" >>"$STUB/auth"
 case "$method $url" in
-  "GET "*/v1/safes/*)                  cp "$STUB/safe.json" "$out"; printf 200 ;;
+  "GET "*/v1/safes/*)                  cp "$STUB/safe.json" "$out"; cat "$STUB/safe.status" 2>/dev/null || printf 200 ;;
   "GET "*/multisig-transactions/\?*)   cp "$STUB/queue.json" "$out"; printf 200 ;;
   POST*) cp "$body" "$STUB/posted.json"; echo '{}' >"$out"; printf 201 ;;
   *) printf 404 ;;
@@ -608,7 +608,7 @@ OTHER=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
 OTHER_HASH=0x1111111111111111111111111111111111111111111111111111111111111111
 
 stub_state() { # <safe nonce> <queue results json> [owners json]
-  rm -f "$STUB/log" "$STUB/auth" "$STUB/posted.json"
+  rm -f "$STUB/log" "$STUB/auth" "$STUB/posted.json" "$STUB/safe.status"
   jq -n --argjson n "$1" --argjson o "${3:-[\"$OWNER\"]}" '{nonce: $n, owners: $o}' >"$STUB/safe.json"
   jq -n --argjson r "$2" '{count: ($r | length), results: $r}' >"$STUB/queue.json"
 }
@@ -678,6 +678,31 @@ if propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null; then
   fail "a used nonce was accepted"
 else pass "a nonce the Safe has already used is refused"; fi
 assert_contains "…saying why" "$(cat "$TMP/propose.err")" "nonce 7 has been used"
+
+# The service is untrusted: a value it returns is checked against its expected
+# shape before bash evaluates or prints it. Arithmetic on a raw string would
+# expand a command substitution in an array subscript.
+stub_state '"nonce[$(touch '"$TMP"'/pwned)]"' '[]'
+if propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null; then
+  fail "a non-numeric nonce from the service was accepted"
+else pass "a non-numeric nonce from the service is refused"; fi
+assert_eq "…without evaluating it" "$(ls "$TMP/pwned" 2>/dev/null)" ""
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "malformed nonce"
+
+# Escape sequences could rewrite the hashes already on screen.
+ESC=$'\e'
+stub_state 7 "$(queued "0xab${ESC}[2K${ESC}[1Aspoofed" "$OTHER")"
+if propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null; then
+  fail "a malformed queued hash from the service was accepted"
+else pass "a malformed queued hash from the service is refused"; fi
+assert_contains "…saying why" "$(cat "$TMP/propose.err")" "malformed safeTxHash"
+assert_eq "…without printing escape sequences" "$(grep -c "$ESC" "$TMP/propose.err")" "0"
+
+stub_state 7 '[]'
+printf '%s' "${ESC}[2Kerror" >"$STUB/safe.json"; printf 500 >"$STUB/safe.status"
+propose "$E2E_CANON" "$E2E_HASH" "$OWNER_PK" >/dev/null
+assert_contains "an error response is reported" "$(cat "$TMP/propose.err")" "HTTP 500"
+assert_eq "…without printing escape sequences" "$(grep -c "$ESC" "$TMP/propose.err")" "0"
 
 stub_state 7 '[]'
 if propose "$E2E_CANON" "$OTHER_HASH" "$OWNER_PK" >/dev/null; then
