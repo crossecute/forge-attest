@@ -1,0 +1,33 @@
+name: Copilot Setup Steps
+
+# Copilot code review and the cloud agent run these steps before they start, so either can
+# build and test. Only the copilot-setup-steps job's steps, permissions, runs-on, services,
+# snapshot, and timeout-minutes are read; other job keys are ignored. Takes effect once on
+# the default branch.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # Same pins as attest.yml's test job, so Copilot tests with the toolchain CI uses.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+
+      # Both suites' results on the PR head, which the review instructions point at for
+      # checking a test count or a named test without re-running it. In out/, which git
+      # ignores. A failing suite must not stop the review, so the exit codes are dropped.
+      - run: |
+          mkdir -p out
+          forge test > out/copilot-forge-test.txt 2>&1 || true
+          tail -n 3 out/copilot-forge-test.txt
+          ./test/shell/run.sh > out/copilot-shell-test.txt 2>&1 || true
+          tail -n 1 out/copilot-shell-test.txt
