@@ -38,3 +38,8 @@ toml_get() {
 
 # normalise a hex string to lowercase 0x-prefixed
 lc() { printf '%s' "${1,,}"; }
+
+# Filter for text from an untrusted source before it is printed: drops colour
+# codes, then every byte outside printable ASCII except tab and newline, so the
+# text cannot carry escapes that rewrite the terminal.
+printable() { sed -E 's/\x1b\[[0-9;]*m//g' | LC_ALL=C tr -cd '\11\12\40-\176'; }

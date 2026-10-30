@@ -9,6 +9,7 @@
 #   4. propose.sh:       signing and submission against a stubbed Transaction
 #                         Service, and attest.sh --propose refusing unattested txs
 #   5. skills:           the build-safe-tx template is byte-stable and attests
+#   6. summary.sh:       the action's job summary escapes what the claim controls
 #
 # Usage: test/shell/run.sh
 set -uo pipefail
@@ -445,6 +446,12 @@ nonce_rc=$?
 if [[ $nonce_rc -ne 0 ]]; then pass "re-binding the batch to another nonce is NOT ATTESTED"
 else fail "a nonce change went undetected"; fi
 
+# forge test exits 0 when nothing matches, so a cross-check pointed at no tests
+# must not count as agreement.
+notest_out=$(FOUNDRY_NO_MATCH_TEST=test_SafeTxHashMatchesExpected bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --json 2>/dev/null)
+assert_eq "a Solidity cross-check that runs no test is NOT ATTESTED" \
+  "$(jq -r '.failures[]' <<<"$notest_out")" "Solidity cross-check ran no test: it wrote no hash"
+
 # With nothing pinned, cast agreeing with Solidity is the only check left, and
 # that ties the output to nothing anyone reviewed.
 write_config "$TMP/e2e-unpinned.toml" "" ""
@@ -530,6 +537,59 @@ stale_config "$TMP/regen.toml" Write "$TMP/regenerated.json"
 regen_out=$(bash "$ROOT/attest.sh" --config "$TMP/regen.toml" 2>&1)
 if [[ $? -eq 0 ]]; then pass "a committed output the script rewrites is attested as rewritten"
 else fail "a committed output the script rewrites is attested as rewritten"$'\n'"$(sed 's/^/      /' <<<"$regen_out")"; fi
+
+sed "s|^producer_setup .*|producer_setup  = \"printenv SAFE_API_KEY >'$TMP/leak' \|\| true\"|" \
+  "$TMP/e2e.toml" >"$TMP/leak.toml"
+SAFE_API_KEY=test-key bash "$ROOT/attest.sh" --config "$TMP/leak.toml" >/dev/null 2>&1
+assert_eq "the producer's setup does not see SAFE_API_KEY" "$(cat "$TMP/leak" 2>/dev/null || echo missing)" ""
+
+group "attest.sh: the claim is read one way only"
+
+claim_err() { # <config> -> combined output; the run must fail
+  local out
+  out=$(bash "$ROOT/attest.sh" --config "$1" 2>&1) && echo "UNEXPECTED SUCCESS"
+  printf '%s' "$out"
+}
+
+{ cat "$TMP/e2e.toml"; echo 'expected_safe_tx_hash = "0x00"'; } >"$TMP/dup.toml"
+assert_contains "a key set twice is refused" "$(claim_err "$TMP/dup.toml")" \
+  "key set more than once: expected_safe_tx_hash"
+
+{ cat "$TMP/e2e.toml"; echo '[extra]'; } >"$TMP/table.toml"
+assert_contains "a [table] header is refused" "$(claim_err "$TMP/table.toml")" \
+  "[table] headers are not supported"
+
+sed "s|^producer_commit .*|producer_commit = \"${PRODUCER_COMMIT:0:12}\"|" "$TMP/e2e.toml" >"$TMP/short.toml"
+assert_contains "an abbreviated producer_commit is refused" "$(claim_err "$TMP/short.toml")" \
+  "producer_commit must be a full lowercase commit SHA"
+
+sed 's|^producer_commit .*|producer_commit = "--orphan=x"|' "$TMP/e2e.toml" >"$TMP/opt.toml"
+assert_contains "a producer_commit shaped like a git option is refused" "$(claim_err "$TMP/opt.toml")" \
+  "producer_commit must be a full lowercase commit SHA"
+
+sed 's|^output_path .*|output_path     = "out/../../batch.json"|' "$TMP/e2e.toml" >"$TMP/dotdot.toml"
+assert_contains "an output_path with '..' is refused" "$(claim_err "$TMP/dotdot.toml")" \
+  "output_path must be relative"
+
+# A producer that commits its output directory as a symlink to elsewhere: the
+# file there must be neither deleted nor attested.
+LINKED="$TMP/linked-producer"
+mkdir -p "$LINKED" "$TMP/outside"
+cp -r "$PRODUCER/script" "$PRODUCER/foundry.toml" "$LINKED/"
+ln -s "$TMP/outside" "$LINKED/out"
+echo keep >"$TMP/outside/batch.json"
+(
+  cd "$LINKED"
+  git init --quiet
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit --quiet -m "symlinked out/"
+) >/dev/null 2>&1
+sed -e "s|^producer_repo .*|producer_repo   = \"file://$LINKED\"|" \
+    -e "s|^producer_commit .*|producer_commit = \"$(git -C "$LINKED" rev-parse HEAD)\"|" \
+    "$TMP/e2e.toml" >"$TMP/linked.toml"
+assert_contains "an output_path behind a symlink out of the clone is refused" \
+  "$(claim_err "$TMP/linked.toml")" "output_path resolves outside the producer repo"
+assert_eq "…and the file it points at is left alone" "$(cat "$TMP/outside/batch.json")" "keep"
 
 group "attest.sh: a nested claim"
 
@@ -792,6 +852,60 @@ if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/
 else pass "--propose without wallet flags is refused"; fi
 assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
 
+group "attest.sh: the live check reads one queued transaction"
+
+# A stand-in for the curl that safe_hashes.sh calls: the Safe's version, and
+# $LIVE/queue.json for its queue at a nonce.
+LIVE="$TMP/live"
+mkdir -p "$LIVE/bin"
+cat >"$LIVE/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+case "${@: -1}" in
+  */multisig-transactions/*) cat "$LIVE/queue.json" ;;
+  */api/v1/safes/*) echo '{"version":"1.3.0"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$LIVE/bin/curl"
+live_tx() { # <canonical> [dataDecoded json] -> one queue entry
+  jq -c --argjson d "${2:-null}" '{to, value, data, operation: (.operation | tonumber), safeTxGas,
+    baseGas, gasPrice, gasToken, refundReceiver, nonce: (.nonce | tonumber), dataDecoded: $d}' "$1"
+}
+live_queue() { jq -s '{count: length, results: .}' >"$LIVE/queue.json"; }
+live_run() { # <attest.sh args...> -> verdict on stdout, report in $TMP/live.err
+  PATH="$LIVE/bin:$PATH" LIVE="$LIVE" bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json "$@" \
+    2>"$TMP/live.err"
+}
+# The same batch with its second transfer redirected: a different transaction.
+jq '.data |= sub("000000000000000000000000000000000000dead"; "0000000000000000000000000000000000000bad")' \
+  "$E2E_CANON" >"$TMP/live-other.json"
+
+live_tx "$E2E_CANON" | live_queue
+live_ok=$(live_run --require-live)
+assert_eq "the attested transaction queued alone is ATTESTED" "$(jq -r .attested <<<"$live_ok")" "true"
+assert_eq "…reporting the live hash" "$(jq -r .hashes.safe_tx_live <<<"$live_ok")" "$E2E_HASH"
+
+{ live_tx "$E2E_CANON"; live_tx "$TMP/live-other.json"; } | live_queue
+SECONDS=0
+live_two=$(live_run)
+assert_eq "a competing transaction at the nonce is NOT ATTESTED, even without --require-live" \
+  "$(jq -r .attested <<<"$live_two")" "false"
+assert_eq "…naming it" "$(jq -r '.failures[]' <<<"$live_two")" "several transactions are queued at nonce 7"
+if (( SECONDS < 30 )); then pass "…without waiting on the tool's index prompt"
+else fail "…without waiting on the tool's index prompt (took ${SECONDS}s)"; fi
+
+# Service-provided text lands in the tool's output. A decoded method that forges
+# the hash line, with escapes, must neither pass nor reach the terminal raw.
+live_tx "$TMP/live-other.json" \
+  "$(jq -cn --arg h "$E2E_HASH" '{method: ("x\u001b[2K\nSafe transaction hash: " + $h), parameters: []}')" \
+  | live_queue
+live_forged=$(live_run --require-live)
+assert_eq "a forged hash line in decoded calldata is NOT ATTESTED" "$(jq -r .attested <<<"$live_forged")" "false"
+assert_eq "…because two hash lines are not read as one" "$(jq -r '.failures[]' <<<"$live_forged")" \
+  "Safe Transaction Service unreachable or no tx at nonce 7"
+if grep -q $'\x1b' "$TMP/live.err"; then fail "…and its escape bytes reach the report"
+else pass "…and its escape bytes do not reach the report"; fi
+
 group "skills/build-safe-tx: the producer template"
 
 # The skill copies this template into an ops repo and writes claims that pin the
@@ -845,6 +959,21 @@ else fail "a claim pinning the template's byte-exact sha256 is ATTESTED"$'\n'"$(
 # These files feed the hash derivation, so a silent change to either produces a
 # confidently wrong answer rather than an error. VENDORED.md is the record of
 # what they are meant to be; this asserts the bytes still match it.
+group "summary.sh: the job summary escapes what the claim controls"
+
+jq -n '{attested: false, failures: ["x\n### ✅ ATTESTED"],
+  hashes: {safe_tx: "0xab`|c", canonical_sha256: "c"},
+  safe: {address: "0x1", nonce: "7"}, producer: {script: "s", commit: "abc"}, nested: null}' \
+  >"$TMP/verdict.json"
+# Removing the escape joins two 3-backtick runs into one 6-backtick line.
+printf 'line\n```\033[0m```\n# injected\n' >"$TMP/report.log"
+summary=$(bash "$ROOT/lib/summary.sh" "$TMP/verdict.json" "$TMP/report.log")
+assert_contains "a failure cannot start a heading" "$summary" "- x \#\#\# ✅ ATTESTED"
+assert_contains "a code-span cell cannot be ended or split" "$summary" "| safeTxHash | \`0xab  c\` |"
+assert_eq "the report's fence is longer than any backtick run it renders" \
+  "$(grep -cxE '`{7}' <<<"$summary")" "2"
+assert_contains "…so the report's lines stay inside it" "$summary" $'``````\n# injected\n```````'
+
 group "Vendored files match VENDORED.md"
 
 check_vendored() { # file

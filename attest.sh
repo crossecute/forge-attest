@@ -73,6 +73,14 @@ for bin in git forge cast jq sha256sum; do
   command -v "$bin" >/dev/null 2>&1 || die "required tool not found: $bin"
 done
 
+# The claim is flat. toml_get ignores [table] headers and takes the first match of
+# a key, so a header or a repeated key would read one way to a reviewer or a TOML
+# parser and another way to this script.
+grep -qE '^[[:space:]]*\[' "$CONFIG" \
+  && die "config: [table] headers are not supported; the claim is a flat list of keys"
+dup_keys=$(sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$CONFIG" | sort | uniq -d)
+[[ -z "$dup_keys" ]] || die "config: key set more than once: $(echo $dup_keys)"
+
 # --- load config --------------------------------------------------------------
 producer_repo=$(toml_get "$CONFIG" producer_repo)
 producer_commit=$(toml_get "$CONFIG" producer_commit)
@@ -113,9 +121,34 @@ expected_forge_version=$(toml_get "$CONFIG" expected_forge_version)
 [[ -n "$producer_commit" ]] || die "config: producer_commit is required"
 [[ -n "$producer_script" ]] || die "config: producer_script is required"
 [[ -n "$output_path"     ]] || die "config: output_path is required"
+# Checked before git sees it: a value starting with `-` would be read as an option.
+[[ "$producer_commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+  || die "config: producer_commit must be a full lowercase commit SHA"
+# output_path is deleted and then read, so it must name a file inside the clone.
+[[ "$output_path" != /* && "/$output_path/" != */../* ]] \
+  || die "config: output_path must be relative to the producer repo, without '..'"
 
 FAILURES=()
 record_fail() { FAILURES+=("$1"); fail "$1"; }
+
+# live_safe_tx_hash <network> <address> <nonce> <log>
+# Prints the hash safe_hashes.sh computes for the transaction queued at <nonce>,
+# and leaves its sanitised output in <log>. Returns 2 when several transactions
+# are queued there, 1 when no single hash could be read.
+live_safe_tx_hash() {
+  local hashes
+  # With several transactions at one nonce the tool prompts for an index and, on
+  # a closed stdin, re-prompts forever. head bounds that output and ends it.
+  { timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" --network "$1" --address "$2" --nonce "$3"
+    echo "forge-attest: exit $?"; } </dev/null 2>&1 | head -c 1048576 | printable >"$4" || true
+  grep -q 'Several transactions with identical nonce' "$4" && return 2
+  tail -1 "$4" | grep -qx 'forge-attest: exit 0' || return 1
+  # The output also prints service-provided text (decoded calldata), so take only
+  # the tool's own anchored line, and only if there is exactly one.
+  hashes=$(grep -oE '^Safe transaction hash: 0x[0-9a-fA-F]{64}$' "$4" || true)
+  [[ -n "$hashes" && "$hashes" != *$'\n'* ]] || return 1
+  lc "${hashes##* }"
+}
 
 # Set inside conditional blocks below; declared here so the JSON verdict can
 # report them as empty rather than tripping `set -u` on a skipped check.
@@ -158,7 +191,7 @@ echo
 
 # --- 1. clone the producer at the pinned commit -------------------------------
 step "Cloning producer at pinned commit"
-git clone --quiet "$producer_repo" "$WORK/repo" || die "git clone failed: $producer_repo"
+git clone --quiet -- "$producer_repo" "$WORK/repo" || die "git clone failed: $producer_repo"
 git -C "$WORK/repo" checkout --quiet "$producer_commit" 2>/dev/null \
   || die "commit not found in producer repo: $producer_commit"
 actual_commit=$(git -C "$WORK/repo" rev-parse HEAD)
@@ -182,8 +215,21 @@ fi
 
 # --- 2. run the producer's Forge script ---------------------------------------
 step "Running the Forge script"
+repo_real=$(cd "$WORK/repo" && pwd -P)
+# A directory the producer commits as a symlink can point output_path outside the
+# clone, where the rm below would delete a file and the read would attest one the
+# script never wrote.
+inside_clone() { # <path relative to the clone>
+  local dir="$WORK/repo/$(dirname "$1")"
+  [[ -d "$dir" ]] || return 0
+  [[ "$(cd "$dir" && pwd -P)/" == "$repo_real/"* ]] \
+    || die "output_path resolves outside the producer repo: $1"
+}
+inside_clone "$output_path"
 (
   cd "$WORK/repo"
+  # The producer's setup and script need no Safe API credentials.
+  unset SAFE_API_KEY
   # A copy committed at the pinned commit would otherwise pass for the script's
   # output when the script exits 0 without writing it. Setup runs after, so a
   # file it writes is still attested, as the reviewed claim asks.
@@ -194,7 +240,8 @@ step "Running the Forge script"
     || { cat "$WORK/forge.err" >&2; exit 1; }
 ) || die "forge script failed (see error above)"
 out_json="$WORK/repo/$output_path"
-[[ -f "$out_json" ]] || die "script did not produce expected output: $output_path"
+inside_clone "$output_path"
+[[ -f "$out_json" && ! -L "$out_json" ]] || die "script did not produce expected output: $output_path"
 ok "produced $output_path"
 
 # --- 3. source integrity: sha256 of the emitted JSON --------------------------
@@ -271,7 +318,7 @@ step "Cross-checking Safe tx hash (Solidity)"
 mkdir -p "$SCRIPT_DIR/out"
 cp "$out_json" "$SCRIPT_DIR/out/producer-tx.json"
 cp "$canonical" "$SCRIPT_DIR/out/canonical-safe-tx.json"
-rm -f "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt"
+rm -f "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" "$SCRIPT_DIR/out/solidity-child-safe-tx-hash.txt"
 if ATTEST_JSON="out/producer-tx.json" \
    ATTEST_EXPECTED_SAFE_TX_HASH="${expected_hash:-$cast_hash}" \
    ATTEST_SAFE="$safe_address" \
@@ -290,7 +337,11 @@ if ATTEST_JSON="out/producer-tx.json" \
      forge test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
   sol_hash=$(lc "$(cat "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" 2>/dev/null || echo '')")
   printf '    safeTx   : %s\n' "${sol_hash:-<unavailable>}"
-  if [[ -n "$sol_hash" && "$sol_hash" != "$cast_hash" ]]; then
+  # forge test exits 0 when no test matches (FOUNDRY_NO_MATCH_TEST set in the
+  # environment, say), so only the written hash shows the check ran.
+  if [[ -z "$sol_hash" ]]; then
+    record_fail "Solidity cross-check ran no test: it wrote no hash"
+  elif [[ "$sol_hash" != "$cast_hash" ]]; then
     record_fail "Solidity hash ($sol_hash) != cast hash ($cast_hash)"
   else
     ok "Solidity agrees with cast${expected_hash:+ and pinned expectation}"
@@ -343,16 +394,12 @@ if [[ -n "$child_safe" ]]; then
   # The child's own queue, if asked for. Catches a different transaction being
   # queued on the child and presented to its owners as "the approval".
   if [[ -n "$child_network" ]]; then
-    set +e
-    child_out="$WORK/child_hashes.out"
-    timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" \
-      --network "$child_network" --address "$child_safe" --nonce "$child_nonce" \
-      >"$child_out" 2>&1
-    child_rc=$?
-    child_live=$(lc "$(sed -E 's/\x1b\[[0-9;]*m//g' "$child_out" \
-      | grep -iA2 'safe transaction hash' | grep -oiE '0x[a-f0-9]{64}' | tail -1)")
-    set -e
-    if [[ "$child_rc" -ne 0 || -z "$child_live" ]]; then
+    child_rc=0
+    child_live=$(live_safe_tx_hash "$child_network" "$child_safe" "$child_nonce" \
+      "$WORK/child_hashes.out") || child_rc=$?
+    if [[ "$child_rc" == 2 ]]; then
+      record_fail "several transactions are queued on the child at nonce $child_nonce"
+    elif [[ "$child_rc" != 0 ]]; then
       msg="child Safe queue unreachable or nothing at nonce $child_nonce"
       if [[ "$REQUIRE_LIVE" == 1 ]]; then record_fail "$msg"; else warn "$msg: skipping"; fi
     elif [[ "$child_live" == "$child_hash" ]]; then
@@ -409,20 +456,16 @@ if [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
     warn "$msg: skipping live check"
   fi
 else
-  # Run errexit-free: the tool and the hash-parsing pipes may legitimately fail
-  # (offline, or no tx queued at that nonce) and that must not abort attestation.
-  set +e
   live_out="$WORK/safe_hashes.out"
-  timeout 60 bash "$SCRIPT_DIR/lib/safe_hashes.sh" \
-    --network "$safe_network" --address "$safe_address" --nonce "$safe_nonce" \
-    >"$live_out" 2>&1
-  live_rc=$?
-  live_hash=$(sed -E 's/\x1b\[[0-9;]*m//g' "$live_out" \
-    | grep -iA2 'safe transaction hash' | grep -oiE '0x[a-f0-9]{64}' | tail -1)
-  live_hash=$(lc "$live_hash")
-  set -e
+  live_rc=0
+  live_hash=$(live_safe_tx_hash "$safe_network" "$safe_address" "$safe_nonce" "$live_out") \
+    || live_rc=$?
 
-  if [[ "$live_rc" -ne 0 || -z "$live_hash" ]]; then
+  if [[ "$live_rc" == 2 ]]; then
+    # A competing transaction is evidence, not an outage: owners shown the queue
+    # could sign the other one. --propose refuses the same state.
+    record_fail "several transactions are queued at nonce $safe_nonce"
+  elif [[ "$live_rc" != 0 ]]; then
     msg="Safe Transaction Service unreachable or no tx at nonce $safe_nonce"
     if [[ "$REQUIRE_LIVE" == 1 ]]; then
       cat "$live_out" >&2; record_fail "$msg"
