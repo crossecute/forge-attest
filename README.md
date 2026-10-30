@@ -31,6 +31,13 @@ script it runs, and the exact outputs that commit must produce. Given one,
 | 4 | **Hash cross-check (Solidity)** | Is the derivation itself trustworthy? | A `forge test` re-reads the *producer's* JSON, redoes the folding and recomputes the same hash in Solidity, asserting it agrees with #3 and the pinned value. No single implementation is trusted, and normalisation itself is covered. |
 | 5 | **Live integrity** | Is the tx *actually queued in the Safe* the same one? | Run `safe-tx-hashes-util` against the Safe Transaction Service (`--network --address --nonce`) and assert the queued tx's hash equals the script-derived hash, and that no other tx is queued at that nonce. |
 
+Before those, the run itself is checked. Every claimed file must be one the script
+wrote during this run, not a copy committed in the producer repo. Every other file
+it writes must be claimed or listed as `unclaimed`. A run that simulates
+transactions from an EOA (a deploy under `vm.startBroadcast`) is refused, because
+calldata that embeds the deployed address depends on the deployer's live nonce and
+cannot be re-derived later.
+
 If all active checks pass, the submitted Safe tx is provably the script's output. If
 anything was changed (the script, the JSON, or the queued tx) at least one hash
 diverges. The run then prints **`NOT ATTESTED`** and exits non-zero. It does the
@@ -86,8 +93,30 @@ caller gets both without scraping colours:
 A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` means
 the live check did not run, not that it passed. `nested` is `null` unless
 the claim names a child Safe. `proposal` is `null` unless `--propose` signed and
-submitted the transaction, and is then `{ "action", "sender" }`. `failures` lists
-exactly what a `NOT ATTESTED` verdict is based on.
+submitted the transaction, and is then `{ "action", "sender", "url" }`, where `url`
+is its Safe{Wallet} page or `""` (see below). `failures` lists exactly what a
+`NOT ATTESTED` verdict is based on.
+
+A config with several claims (see [Several transactions from one
+producer](#several-transactions-from-one-producer)) gets a different document:
+
+```json
+{
+  "attested": false,
+  "layout": "runs",
+  "producer": { "repo": "…", "commit": "…" },
+  "toolchain": { … },
+  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…", "written": ["txs/Upgrade-8453.json"] } ],
+  "claims": [ { "output_path": "txs/Upgrade-8453.json", "run": 0, "attested": true,
+                "safe": { … }, "chain_id": "8453", "live": true, "hashes": { … },
+                "nested": null, "proposal": null, "url": "https://app.safe.global/…", "failures": [] } ],
+  "failures": [ "[txs/Upgrade-10.json] canonical sha256 mismatch (expected …)" ]
+}
+```
+
+Each claim carries its own verdict and failures. The top-level `failures` lists
+them all, each prefixed with the claim's `output_path`, plus any failure of a run
+itself.
 
 ### Proposing from the command line
 
@@ -126,6 +155,31 @@ the live check needs all three. The service is chosen from `safe_network` using
 the same table as the live check, and must agree with the transaction's chain id. `SAFE_API_KEY` (from
 Safe's developer dashboard) is sent as a Bearer token when set.
 `SAFE_TX_SERVICE_URL` overrides the service base URL, for a self-hosted service.
+A claim can set `safe_tx_service_url` instead, which a config with several claims
+must do, since one URL cannot serve several chains.
+
+With several claims, steps 2 and 3 run for every claim before anything is signed,
+so a refusal on one chain sends nothing on any. Each claim is then signed and
+submitted in turn, to its own chain's service. A submission that fails part way
+cannot be taken back, but running the same command again finishes the set: claims
+already queued are confirmed or skipped, and no one signs twice. A claim with
+`live = false` (a chain with no service in the table) is not submitted. It is
+listed with its hash, for import in the Safe{Wallet} UI.
+
+While it runs, `--propose` keeps a table with one row per claim: chain, Safe,
+nonce, `safeTxHash` and where that submission stands. On a terminal the table
+updates in place, and each hash links to the transaction's Safe{Wallet} page. In
+CI, in a pipe, or with `FORGE_ATTEST_LINKS=0`, it prints one line per change
+instead, with the URLs written out. The links are printed in full at the end
+either way.
+
+The link has the form
+`https://app.safe.global/transactions/tx?safe=<prefix>:<safe>&id=multisig_<safe>_<safeTxHash>`.
+The prefix is the chain's short name in Safe{Wallet}'s own chain config. By
+default it is taken to be the network's path in the Transaction Service URL (`eth`,
+`oeth`, `base`, …). That is an assumption, not something Safe documents, so a
+claim can set `safe_ui_prefix` to override it. A claim with its own service gets
+no link unless it sets one, since Safe{Wallet} reads the public service.
 
 `--propose` does not support nested claims yet, and accepts owners only, not
 delegates.
@@ -145,7 +199,9 @@ The action at the root of this repository runs the same script:
 It installs Foundry, runs `attest.sh --json` against your config, writes the
 verdict to the job summary, and exposes `attested`, `safe-tx-hash`,
 `canonical-sha256`, `child-safe-tx-hash`, and the full `json` document as step
-outputs. Put `attest.toml` in your own ops repo and point `producer_repo` at it.
+outputs. For a config with several claims the three hash outputs are empty, and
+each claim's hashes are in `json`. Put `attest.toml` in your own ops repo and point
+`producer_repo` at it.
 
 **Pin the action to a commit SHA, not a tag.** A tag can be moved, so whoever can
 move it decides what "verified" means in your pipeline. That is the exact property
@@ -354,10 +410,67 @@ reviewing the transaction*. See
 [`attest.batch.example.toml`](attest.batch.example.toml) for a fully commented batch
 claim.
 
-The claim is a flat list of `key = value` lines. `[table]` headers and repeated
-keys are refused, because this reader and a TOML parser would disagree about
-which value counts. `producer_commit` must be the full commit SHA, and
-`output_path` a path inside the producer repo.
+The claim is a flat list of `key = value` lines. Repeated keys, unknown keys,
+headers other than `[[run]]` and `[[run.claim]]`, and strings that are not one-line
+`"double-quoted"` without backslashes are refused, because this reader and a TOML
+parser would disagree about which value counts. `producer_commit` must be the full
+commit SHA, and `output_path` a path inside the producer repo.
+
+If the script writes other files besides `output_path`, list them so the run
+accepts them without attesting them:
+
+```toml
+unclaimed = ["out/other.json"]
+```
+
+## Several transactions from one producer
+
+Ops repos often build one transaction per chain. Some run the script once per
+chain with `--rpc-url`; others fork every chain inside one run and write a file for
+each. Both go in one config, with the producer keys at the top, a `[[run]]` per
+`forge script` call, and a `[[run.claim]]` per output file:
+
+```toml
+producer_repo   = "https://github.com/you/your-ops-repo"
+producer_commit = "<40-hex commit sha>"
+
+[[run]]
+script  = "script/Upgrade.s.sol:Upgrade"
+rpc_env = "BASE_RPC_URL"            # passed as --rpc-url; the URL is never printed
+
+[[run.claim]]
+output_path  = "txs/Upgrade-8453.json"
+safe_network = "base"
+safe_address = "0x<safe>"
+safe_nonce   = "23"
+expected_canonical_sha256 = "<sha256 of the canonical form>"
+expected_safe_tx_hash     = "0x<safeTxHash>"
+```
+
+A claim takes the same keys as a flat claim, plus `live`, `safe_ui_prefix` and
+`safe_tx_service_url`. A run takes `script`, `rpc_env` and `unclaimed`.
+[`attest.runs.example.toml`](attest.runs.example.toml) is a commented example of
+both kinds of run.
+
+What changes with several claims:
+
+- The producer is cloned once and `producer_setup` runs once. Each run's outputs
+  are checked against that run alone, so a claim cannot be met by a file another
+  run wrote.
+- A run with `rpc_env` reads its chain id from that RPC, and every claim in it
+  must be a transaction for that chain. The verdict records the chain and the
+  block number at the time of the run. A run without one may fork chains itself;
+  it then reads whatever RPCs the producer names, at their latest block.
+- Two claims for the same Safe, chain and nonce fail, since only one can execute.
+- `live = false` marks a claim whose chain has no Transaction Service in the
+  table. Its live check is skipped as a reviewed exception, also under
+  `--require-live`.
+- The run is `ATTESTED` only if every claim is.
+
+A producer whose output depends on chain state reproduces only while that state
+holds. A claim for an upgrade that checks its own preconditions, for example,
+stops reproducing once the upgrade executes. Keep the `--json` verdict from before
+execution as the record.
 
 ## Building transactions from a prompt
 
@@ -426,6 +539,11 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   since the owners could sign the other one. `--propose` refuses the same state.
 - A nested approval pointing at a different transaction than the one under review.
   The approval is re-derived from the parent, never read back from it.
+- A transaction the script produced but no claim covers → the run fails unless
+  the file is listed in `unclaimed`, so leaving one out of review is a visible
+  change to the config.
+- Safe calldata that embeds an address the same run deployed from an EOA → the
+  run is refused, since the address moves with the deployer's nonce.
 
 **Trusts, and why that is safe**
 - The Safe Transaction Service (check #5) is queried over the network, but a
@@ -496,6 +614,9 @@ forge test            # Solidity: hashing, MultiSend packing, every JSON format
 ./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --propose
 ```
 
+The shell suite starts two local `anvil` chains for the multi-chain tests, and
+uses `script(1)` to check the table's terminal output.
+
 `test/fixtures/` holds one file per supported shape, including a real
 `SafeTxHelper`-generated batch from FraxFinance's `frax-oft-upgradeable`. See
 [`test/fixtures/README.md`](test/fixtures/README.md). Both suites derive hashes from
@@ -519,15 +640,18 @@ forge-attest/
 ├── action.yml                    # GitHub Action wrapping attest.sh
 ├── attest.toml                   # the claim being attested
 ├── attest.batch.example.toml     # a commented claim for a Transaction Builder batch
+├── attest.runs.example.toml      # a commented config with several runs and claims
 ├── SECURITY.md                   # how to report a vulnerability
 ├── lib/
 │   ├── normalize.sh              # any supported JSON -> canonical SafeTx (check #2)
 │   ├── nested.sh                 # constructs a child Safe's approveHash tx
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
+│   ├── claims.sh                 # reads attest.toml into one model, refusing ambiguous TOML
 │   ├── propose.sh                # signs and submits an attested tx (--propose)
+│   ├── status.sh                 # the per-chain table --propose keeps
 │   ├── summary.sh                # renders the verdict as the action's job summary
-│   ├── common.sh                 # logging + tiny TOML reader
+│   ├── common.sh                 # logging, tiny TOML reader, network table
 │   └── VENDORED.md               # provenance of the vendored tool
 ├── .claude-plugin/               # Claude Code plugin and marketplace manifests
 ├── skills/
