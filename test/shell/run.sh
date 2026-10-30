@@ -9,7 +9,10 @@
 #   4. propose.sh:       signing and submission against a stubbed Transaction
 #                         Service, and attest.sh --propose refusing unattested txs
 #   5. skills:           the build-safe-tx template is byte-stable and attests
-#   6. summary.sh:       the action's job summary escapes what the claim controls
+#   6. several claims:   one producer run per chain or one run for many, the
+#                         completeness and deploy checks, and --propose across
+#                         chains with its status table
+#   7. summary.sh:       the action's job summary escapes what the claim controls
 #
 # Usage: test/shell/run.sh
 set -uo pipefail
@@ -25,7 +28,8 @@ NONCE="42"
 PASS=0
 FAILED=0
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+ANVILS=""
+trap 'kill $ANVILS 2>/dev/null; rm -rf "$TMP"' EXIT
 
 if [[ -t 1 ]]; then GREEN=$'\033[32m'; RED=$'\033[31m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
 else GREEN=; RED=; BOLD=; RESET=; fi
@@ -571,6 +575,15 @@ sed 's|^output_path .*|output_path     = "out/../../batch.json"|' "$TMP/e2e.toml
 assert_contains "an output_path with '..' is refused" "$(claim_err "$TMP/dotdot.toml")" \
   "output_path must be relative"
 
+# A misspelt pin would otherwise drop out of the claim without a word.
+{ cat "$TMP/e2e.toml"; echo 'expected_safe_tx_hsah = "0x00"'; } >"$TMP/typo.toml"
+assert_contains "an unknown key is refused" "$(claim_err "$TMP/typo.toml")" \
+  "unknown key in the claim: expected_safe_tx_hsah"
+
+{ cat "$TMP/e2e.toml"; echo 'safe_ui_prefix = "eth](https://evil.example)"'; } >"$TMP/prefix.toml"
+assert_contains "a safe_ui_prefix that is not a short name is refused" "$(claim_err "$TMP/prefix.toml")" \
+  "safe_ui_prefix must be a chain short name"
+
 # A producer that commits its output directory as a symlink to elsewhere: the
 # file there must be neither deleted nor attested.
 LINKED="$TMP/linked-producer"
@@ -806,7 +819,7 @@ sent_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.
   bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json --propose -- --private-key "$OWNER_PK" \
   2>"$TMP/sent.err")
 assert_eq "an attested claim is proposed" "$(jq -c .proposal <<<"$sent_out")" \
-  "{\"action\":\"proposed\",\"sender\":\"$OWNER\"}"
+  "{\"action\":\"proposed\",\"sender\":\"$OWNER\",\"url\":\"\"}"
 assert_eq "…as the hash attest.sh derived" "$(jq -r .contractTransactionHash "$STUB/posted.json")" "$E2E_HASH"
 assert_contains "…with an origin naming the producer commit" "$(jq -r .origin "$STUB/posted.json")" \
   "BuildBatch.s.sol:BuildBatch@${PRODUCER_COMMIT:0:12}"
@@ -822,6 +835,7 @@ producer_commit = "$PRODUCER_COMMIT"
 producer_setup  = "mkdir -p out && cp '$FIX/safe-tx-single.json' out/flat.json"
 producer_script = "script/BuildBatch.s.sol:BuildBatch"
 output_path     = "out/flat.json"
+unclaimed       = ["out/batch.json"]
 expected_safe_tx_hash = "$(safe_tx_hash "$single_canon")"
 safe_network = "ethereum"
 safe_address = ""
@@ -906,6 +920,248 @@ assert_eq "…because two hash lines are not read as one" "$(jq -r '.failures[]'
 if grep -q $'\x1b' "$TMP/live.err"; then fail "…and its escape bytes reach the report"
 else pass "…and its escape bytes do not reach the report"; fi
 
+group "attest.sh: several claims from one producer"
+
+# Two local chains stand in for a producer that forks each chain it builds for.
+anvil_up() { # <port> <chain id>
+  anvil --port "$1" --chain-id "$2" >/dev/null 2>&1 &
+  ANVILS+=" $!"
+  for _ in $(seq 100); do
+    cast chain-id --rpc-url "http://127.0.0.1:$1" >/dev/null 2>&1 && return 0
+    sleep 0.1
+  done
+  return 1
+}
+PORT_A=$((20000 + RANDOM % 20000))
+PORT_B=$((PORT_A + 1))
+anvil_up "$PORT_A" 10 && anvil_up "$PORT_B" 8453 || fail "anvil did not start: the multi-chain tests need it"
+export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B"
+
+# Multi forks both chains in one run, the way FraxFinance's V110 upgrade does;
+# PerChain builds for whichever chain --rpc-url names; Twin writes two outputs
+# for one chain. DEPLOY=true makes Multi simulate a deploy from an EOA first.
+MULTI="$TMP/multi-producer"
+mkdir -p "$MULTI/script"
+cp "$PRODUCER/foundry.toml" "$MULTI/"
+cat >"$MULTI/script/Multi.s.sol" <<'EOF'
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.28;
+
+interface Vm {
+    function createSelectFork(string calldata url) external returns (uint256);
+    function startBroadcast(uint256 pk) external;
+    function stopBroadcast() external;
+    function envString(string calldata name) external view returns (string memory);
+    function envOr(string calldata name, bool defaultValue) external view returns (bool);
+    function toString(uint256 value) external pure returns (string memory);
+    function projectRoot() external view returns (string memory);
+    function writeFile(string calldata path, string calldata data) external;
+}
+
+contract Impl {}
+
+abstract contract Base {
+    Vm internal constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
+
+    function write(string memory name) internal {
+        string memory id = vm.toString(block.chainid);
+        vm.writeFile(
+            string.concat(vm.projectRoot(), "/out/", name, ".json"),
+            string.concat('{"version":"1.0","chainId":', id,
+                ',"transactions":[{"to":"0x000000000000000000000000000000000000dEaD","value":"', id,
+                '","data":"0x","operation":"0"}]}\n')
+        );
+    }
+}
+
+contract Multi is Base {
+    function run() external {
+        string[2] memory rpcs = [vm.envString("RPC_A"), vm.envString("RPC_B")];
+        for (uint256 i; i < 2; i++) {
+            vm.createSelectFork(rpcs[i]);
+            if (vm.envOr("DEPLOY", false)) {
+                vm.startBroadcast(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80);
+                new Impl();
+                vm.stopBroadcast();
+            }
+            write(string.concat("tx-", vm.toString(block.chainid)));
+        }
+    }
+}
+
+contract PerChain is Base {
+    function run() external {
+        if (vm.envOr("DEPLOY", false)) {
+            vm.startBroadcast(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80);
+            new Impl();
+            vm.stopBroadcast();
+        }
+        write(string.concat("tx-", vm.toString(block.chainid)));
+    }
+}
+
+contract Twin is Base {
+    function run() external { write("a"); write("b"); }
+}
+EOF
+printf 'out/\nforge-out/\ncache/\nbroadcast/\n' >"$MULTI/.gitignore"
+(
+  cd "$MULTI"
+  git init --quiet
+  git -c user.email=t@t -c user.name=t add -A
+  git -c user.email=t@t -c user.name=t commit --quiet -m "multi-chain producer"
+) >/dev/null 2>&1
+MULTI_COMMIT=$(git -C "$MULTI" rev-parse HEAD)
+(cd "$MULTI" && mkdir -p out && forge script script/Multi.s.sol:Multi >/dev/null 2>&1)
+
+pin() { # <output> <nonce> -> "<canonical sha256> <safeTxHash>"
+  bash "$NORMALIZE" --input "$1" --safe "$SAFE" --nonce "$2" >"$TMP/pin.json" 2>/dev/null
+  printf '%s %s' "$(canonical_sha <"$TMP/pin.json")" "$(safe_tx_hash "$TMP/pin.json")"
+}
+read -r SHA10 HASH10 <<<"$(pin "$MULTI/out/tx-10.json" 3)"
+read -r SHA8453 HASH8453 <<<"$(pin "$MULTI/out/tx-8453.json" 5)"
+SAFE_CS=$(cast to-check-sum-address "$SAFE")
+
+multi_head() { # <script contract> [run keys...]
+  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n\n[[run]]\nscript = "script/Multi.s.sol:%s"\n' \
+    "$MULTI" "$MULTI_COMMIT" "$1"
+  printf '%s\n' "${@:2}"
+}
+claim10() { # [extra keys...]
+  printf '\n[[run.claim]]\noutput_path = "out/tx-10.json"\nsafe_network = "optimism"\nsafe_address = "%s"\nsafe_nonce = "3"\nexpected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
+    "$SAFE" "$SHA10" "$HASH10"
+  printf '%s\n' "$@"
+}
+claim8453() { # [extra keys...]
+  printf '\n[[run.claim]]\noutput_path = "out/tx-8453.json"\nsafe_network = "base"\nsafe_address = "%s"\nsafe_nonce = "5"\nexpected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
+    "$SAFE" "$SHA8453" "$HASH8453"
+  printf '%s\n' "$@"
+}
+
+{ multi_head Multi; claim10 'live = false'; claim8453 'live = false'; } >"$TMP/multi.toml"
+multi_out=$(bash "$ROOT/attest.sh" --config "$TMP/multi.toml" --json 2>"$TMP/multi.err")
+assert_eq "one run that writes two chains' outputs is ATTESTED" "$(jq -r .attested <<<"$multi_out")" "true"
+assert_eq "…with a verdict per claim" "$(jq -r '[.claims[] | .attested] | join(",")' <<<"$multi_out")" "true,true"
+assert_eq "…and the files the run wrote" "$(jq -r '.runs[0].written | join(",")' <<<"$multi_out")" \
+  "out/tx-10.json,out/tx-8453.json"
+assert_eq "…linking each to its Safe{Wallet} page" "$(jq -r '.claims[0].url' <<<"$multi_out")" \
+  "https://app.safe.global/transactions/tx?safe=oeth:$SAFE_CS&id=multisig_${SAFE_CS}_$HASH10"
+assert_eq "…with the chain's own prefix" "$(jq -r '.claims[1].url' <<<"$multi_out" | sed -E 's/.*safe=([a-z0-9]+):.*/\1/')" "base"
+
+# An output nobody claims is a transaction that could be produced and then left
+# out of review, so it fails the run unless it is set aside by name.
+{ multi_head Multi; claim10 'live = false'; } >"$TMP/multi-one.toml"
+one_out=$(bash "$ROOT/attest.sh" --config "$TMP/multi-one.toml" --json 2>/dev/null)
+assert_eq "an output no claim covers is NOT ATTESTED" "$(jq -r .attested <<<"$one_out")" "false"
+assert_contains "…naming the file" "$(jq -r '.failures[]' <<<"$one_out")" \
+  "wrote files no claim covers (claim them or list them in unclaimed): out/tx-8453.json"
+{ multi_head Multi 'unclaimed = ["out/tx-8453.json"]'; claim10 'live = false'; } >"$TMP/multi-unclaimed.toml"
+if bash "$ROOT/attest.sh" --config "$TMP/multi-unclaimed.toml" >/dev/null 2>&1; then
+  pass "…and is ATTESTED once listed in unclaimed"
+else fail "…and is ATTESTED once listed in unclaimed"; fi
+
+# A simulated deploy lands at an address set by the deployer's live nonce, so
+# calldata built on it cannot be re-derived later.
+deploy_out=$(DEPLOY=true bash "$ROOT/attest.sh" --config "$TMP/multi.toml" --json 2>/dev/null)
+assert_eq "a run that simulates EOA deploys is NOT ATTESTED" "$(jq -r .attested <<<"$deploy_out")" "false"
+assert_contains "…counting them" "$(jq -r '.failures[]' <<<"$deploy_out")" "simulates 2 transaction(s) from an EOA"
+
+# One run per chain, each given its RPC: a claim belongs to the run that wrote it.
+{ multi_head PerChain 'rpc_env = "RPC_A"'; claim10 'live = false'
+  printf '\n[[run]]\nscript = "script/Multi.s.sol:PerChain"\nrpc_env = "RPC_B"\n'; claim8453 'live = false'
+} >"$TMP/per-chain.toml"
+per_out=$(bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
+assert_eq "one run per chain is ATTESTED" "$(jq -r .attested <<<"$per_out")" "true"
+assert_eq "…recording each run's chain" "$(jq -r '[.runs[].chain_id] | join(",")' <<<"$per_out")" "10,8453"
+per_deploy=$(DEPLOY=true bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
+assert_eq "a deploy under a run's own RPC is refused per run" \
+  "$(jq -r '[.failures[] | select(test("simulates 1 transaction\\(s\\) from an EOA"))] | length' <<<"$per_deploy")" "2"
+sed 's/^rpc_env = "RPC_A"/rpc_env = "RPC_B"/' "$TMP/per-chain.toml" >"$TMP/per-chain-swapped.toml"
+swap_out=$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-swapped.toml" --json 2>/dev/null)
+assert_contains "a claim another run wrote is NOT ATTESTED" "$(jq -r '.failures[]' <<<"$swap_out")" \
+  "[out/tx-10.json] script did not produce expected output: out/tx-10.json"
+sed 's/^rpc_env = "RPC_A"/rpc_env = "FORGE_ATTEST_TEST_UNSET"/' "$TMP/per-chain.toml" >"$TMP/per-chain-unset.toml"
+assert_contains "an rpc_env that is not set is refused" \
+  "$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-unset.toml" 2>&1)" "FORGE_ATTEST_TEST_UNSET, which is not set"
+
+# Only one transaction executes at a Safe's nonce.
+{ multi_head Twin
+  printf '\n[[run.claim]]\noutput_path = "out/%s.json"\nsafe_address = "%s"\nsafe_nonce = "9"\n' a "$SAFE" b "$SAFE"
+} >"$TMP/twin.toml"
+twin_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin.toml" --json 2>/dev/null)
+assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
+  "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_out")" "2"
+
+group "attest.sh --propose: several claims"
+
+# Each claim names its own service, as two chains would have.
+propose_multi() { # <config> -> verdict on stdout, report in $TMP/pm.err
+  PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" --config "$1" --json --propose \
+    -- --private-key "$OWNER_PK" 2>"$TMP/pm.err"
+}
+{ multi_head Multi
+  claim10 'safe_tx_service_url = "https://stub.invalid/tx-service/oeth"' 'safe_ui_prefix = "oeth"'
+  claim8453 'safe_tx_service_url = "https://stub.invalid/tx-service/base"'
+} >"$TMP/pm.toml"
+stub_state 0 '[]'
+pm_out=$(propose_multi "$TMP/pm.toml")
+assert_eq "every attested claim is proposed" "$(jq -r '[.claims[].proposal.action] | join(",")' <<<"$pm_out")" \
+  "proposed,proposed"
+assert_eq "…one submission each" "$(posts)" "2"
+assert_eq "…to each claim's own service" \
+  "$(grep '^POST' "$STUB/log" | sed -E 's|.*tx-service/([a-z]+)/.*|\1|' | paste -sd,)" "oeth,base"
+assert_contains "…with a row per chain in the report" "$(cat "$TMP/pm.err")" "optimism 10"
+assert_contains "…showing each submission" "$(cat "$TMP/pm.err")" "✓ proposed"
+assert_eq "…linking the claim that names its Safe{Wallet} prefix" "$(jq -r '.claims[0].proposal.url' <<<"$pm_out")" \
+  "https://app.safe.global/transactions/tx?safe=oeth:$SAFE_CS&id=multisig_${SAFE_CS}_$HASH10"
+assert_eq "…and not guessing one for a self-hosted service" "$(jq -r '.claims[1].proposal.url' <<<"$pm_out")" ""
+
+# A nonce already used on one chain is found before anything is signed.
+stub_state 4 '[]'
+refused_out=$(propose_multi "$TMP/pm.toml")
+assert_eq "a refusal on one chain sends nothing on any" "$(posts)" "0"
+assert_contains "…saying why" "$(cat "$TMP/pm.err")" "refused: Safe nonce is already 4"
+assert_contains "…and that the other was held back" "$(cat "$TMP/pm.err")" \
+  "$(printf '%-22s %s…%s: – not sent' 'base 8453' "${HASH8453:0:6}" "${HASH8453: -4}")"
+assert_contains "…and nothing signed" "$(cat "$TMP/pm.err")" "nothing was signed or sent"
+assert_eq "…which reports no proposal" "$(jq -r '.claims[1].proposal' <<<"$refused_out")" "null"
+
+{ multi_head Multi; claim10; claim8453; } >"$TMP/pm-shared.toml"
+stub_state 0 '[]'
+shared_out=$(SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth propose_multi "$TMP/pm-shared.toml")
+assert_contains "one SAFE_TX_SERVICE_URL for several claims is refused" "$(jq -r '.failures[]' <<<"$shared_out")" \
+  "SAFE_TX_SERVICE_URL names one service for every claim"
+assert_eq "…before anything is sent" "$(posts)" "0"
+
+{ multi_head Multi
+  claim10 'safe_tx_service_url = "https://stub.invalid/tx-service/oeth"'
+  claim8453 'live = false'
+} >"$TMP/pm-manual.toml"
+stub_state 0 '[]'
+manual_out=$(propose_multi "$TMP/pm-manual.toml")
+assert_eq "a live = false claim is not submitted" "$(posts)" "1"
+assert_contains "…and is listed for manual import" "$(cat "$TMP/pm.err")" "– import manually"
+assert_eq "…without failing its live check" \
+  "$(jq -r '.claims[1].failures | length' <<<"$manual_out")" "0"
+
+group "status.sh: the per-chain table"
+
+status_demo='source lib/common.sh; source lib/status.sh
+  ST_NAME=("optimism 10") ST_SAFE=(0x111CEEee040739fD91D29C34C33E6B3E112F2177) ST_NONCE=(3)
+  ST_HASH=(0x'"$(printf 'ab%.0s' {1..32})"') ST_URL=("https://app.safe.global/transactions/tx?x")
+  status_init; status_set 0 "✓ proposed"'
+if command -v script >/dev/null; then
+  tty_out=$(cd "$ROOT" && script -qec "bash -c '$status_demo'" /dev/null)
+  assert_contains "on a terminal each hash is a hyperlink" "$tty_out" $'\033]8;;https://app.safe.global/transactions/tx?x\033\\'
+  assert_contains "…and the table is redrawn in place" "$tty_out" $'\033[2A'
+else
+  fail "script(1) is needed to test terminal output"
+fi
+plain_out=$(cd "$ROOT" && bash -c "$status_demo" 2>&1)
+assert_eq "elsewhere there are no escape codes" "$(grep -c $'\033' <<<"$plain_out")" "0"
+assert_contains "…and URLs are written out" "$plain_out" "https://app.safe.global/transactions/tx?x"
+assert_contains "…with one line per change" "$plain_out" "optimism 10            0xabab…abab: ✓ proposed"
+
 group "skills/build-safe-tx: the producer template"
 
 # The skill copies this template into an ops repo and writes claims that pin the
@@ -973,6 +1229,19 @@ assert_contains "a code-span cell cannot be ended or split" "$summary" "| safeTx
 assert_eq "the report's fence is longer than any backtick run it renders" \
   "$(grep -cxE '`{7}' <<<"$summary")" "2"
 assert_contains "…so the report's lines stay inside it" "$summary" $'``````\n# injected\n```````'
+
+H64=0x$(printf 'ab%.0s' {1..32})
+jq -n --arg h "$H64" --arg safe "$SAFE" '{attested: true, layout: "runs",
+  producer: {repo: "r", commit: "0123456789abcdef"}, failures: [], claims: [
+  {output_path: "out/a.json", chain_id: "10", safe: {address: $safe, nonce: "3"}, hashes: {safe_tx: $h},
+   url: "https://app.safe.global/transactions/tx?safe=oeth:\($safe)&id=multisig_\($safe)_\($h)", attested: true, nested: null},
+  {output_path: "out/b.json", chain_id: "8453", safe: {address: $safe, nonce: "5"}, hashes: {safe_tx: $h},
+   url: "javascript:alert(1)", attested: true, nested: null}]}' >"$TMP/verdict-runs.json"
+runs_summary=$(bash "$ROOT/lib/summary.sh" "$TMP/verdict-runs.json" "$TMP/report.log")
+assert_contains "a multi-claim summary has a row per claim, linking its Safe{Wallet} page" "$runs_summary" \
+  "| \`out/a.json\` | 10 | \`$SAFE\` @ 3 | [\`$H64\`](https://app.safe.global/transactions/tx?safe=oeth:"
+assert_contains "…and links nothing not shaped like one" "$runs_summary" \
+  "| \`out/b.json\` | 8453 | \`$SAFE\` @ 5 | \`$H64\` | ✅ |"
 
 group "Vendored files match VENDORED.md"
 

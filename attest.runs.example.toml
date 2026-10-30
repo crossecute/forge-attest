@@ -1,0 +1,59 @@
+# A claim covering several Safe transactions from one producer commit.
+#
+# Producer keys go at the top. Each [[run]] is one `forge script` call, and each
+# [[run.claim]] under it is one output file that call writes. Every file a run
+# writes outside forge's build directories must be claimed or listed in
+# `unclaimed`, so no transaction is produced and then left out of review.
+#
+# Only this subset of TOML is read: one-line "double-quoted" strings without
+# backslashes, and no headers besides [[run]] and [[run.claim]].
+
+producer_repo   = "https://github.com/you/your-ops-repo"
+producer_commit = "<40-hex commit sha>"
+producer_setup  = "forge install"
+expected_forge_version = "1.7.1-stable"
+
+# A script that builds for whichever chain --rpc-url names: one run per chain.
+# rpc_env names the variable holding the RPC URL; the URL itself is never written
+# to the config or the report. The run's chain id is read from it and must match
+# each claim's transaction.
+[[run]]
+script  = "script/Upgrade.s.sol:Upgrade"
+rpc_env = "OPTIMISM_RPC_URL"
+
+[[run.claim]]
+output_path  = "txs/Upgrade-10.json"
+safe_network = "optimism"
+safe_address = "0x<safe on optimism>"
+safe_nonce   = "17"
+expected_canonical_sha256 = "<sha256 of the canonical form>"
+expected_safe_tx_hash     = "0x<safeTxHash>"
+
+[[run]]
+script  = "script/Upgrade.s.sol:Upgrade"
+rpc_env = "BASE_RPC_URL"
+
+[[run.claim]]
+output_path  = "txs/Upgrade-8453.json"
+safe_network = "base"
+safe_address = "0x<safe on base>"
+safe_nonce   = "23"
+expected_canonical_sha256 = "<sha256 of the canonical form>"
+expected_safe_tx_hash     = "0x<safeTxHash>"
+
+# A script that forks every chain itself writes all its files in one run. Files
+# it writes that this claim does not cover are set aside by name.
+[[run]]
+script    = "script/UpgradeAll.s.sol:UpgradeAll"
+unclaimed = ["txs/UpgradeAll-1.json"]
+
+[[run.claim]]
+output_path  = "txs/UpgradeAll-1329.json"
+safe_network = ""
+safe_address = "0x<safe on sei>"
+safe_nonce   = "9"
+# No Transaction Service for this chain in lib/safe_hashes.sh: say so, rather
+# than let the live check skip. --propose lists it for import in Safe{Wallet}.
+live         = false
+expected_canonical_sha256 = "<sha256 of the canonical form>"
+expected_safe_tx_hash     = "0x<safeTxHash>"
