@@ -64,21 +64,12 @@ eval "$(bash "$SCRIPT_DIR/derive.sh" "$canonical")"
   || die "canonical form hashes to $(lc "$SAFE_TX_HASH"), not the attested $hash"
 
 # --- service URL --------------------------------------------------------------
-# The network table is read as data from the vendored safe_hashes.sh, so the
-# live check and this script resolve a network name to the same service.
-map_lookup() { # <array name> <key>
-  sed -n -E "/^declare -A -r $1=\(/,/^\)/ s/^[[:space:]]*\[\"$2\"\]=\"(.*)\"$/\1/p" \
-    "$SCRIPT_DIR/safe_hashes.sh"
-}
 if [[ -n "${SAFE_TX_SERVICE_URL:-}" ]]; then
   base="${SAFE_TX_SERVICE_URL%/}"
 else
-  base=$(map_lookup API_URLS "$network")
+  base=$(network_service "$network")
   [[ -n "$base" ]] || die "unknown network '$network': not in lib/safe_hashes.sh"
-  base_url=$(sed -n -E 's/^readonly BASE_URL="(.*)"$/\1/p' "$SCRIPT_DIR/safe_hashes.sh")
-  [[ -n "$base_url" ]] || die "could not read BASE_URL from lib/safe_hashes.sh"
-  base=${base/\$\{BASE_URL\}/$base_url}
-  net_chain=$(map_lookup CHAIN_IDS "$network")
+  net_chain=$(network_lookup CHAIN_IDS "$network")
   [[ "$net_chain" == "$chain_id" ]] \
     || die "network '$network' is chain $net_chain but the transaction is for chain $chain_id"
 fi
