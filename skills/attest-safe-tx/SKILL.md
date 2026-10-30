@@ -63,5 +63,6 @@ model" sections before writing a claim.
    with their signer's `cast` flags (`--ledger`, `--trezor`, `--account <name>`).
    Do not run it for them: it signs with their wallet and publishes to the Safe
    Transaction Service. It proposes the transaction, or confirms it if already
-   queued, then requires the live check. The hashes it prints before signing
-   should match the device and step 5.
+   queued, then requires the live check. For a nested claim it signs the child's
+   approval instead and needs `child_network` set. The hashes it prints before
+   signing should match the device and step 5.

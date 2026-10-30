@@ -94,7 +94,8 @@ A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` me
 the live check did not run, not that it passed. `nested` is `null` unless
 the claim names a child Safe. `proposal` is `null` unless `--attest` signed and
 submitted the transaction, and is then `{ "action", "sender", "url" }`, where `url`
-is its Safe{Wallet} page or `""` (see below). `failures` lists exactly what a
+is the submitted transaction's Safe{Wallet} page (for a nested claim, the child's
+approval) or `""` (see below). `failures` lists exactly what a
 `NOT ATTESTED` verdict is based on.
 
 A config with several claims (see [Several transactions from one
@@ -182,9 +183,18 @@ default it is taken to be the network's path in the Transaction Service URL (`et
 claim can set `safe_ui_prefix` to override it. A claim with its own service gets
 no link unless it sets one, since Safe{Wallet} reads the public service.
 
-`--attest` does not support nested claims yet, and accepts owners only, not
-delegates. It was called `--propose` in v1.1.0, and that name still works with a
-warning.
+For a nested claim, the signer is an owner of the child Safe, and what they sign
+is the child's `approveHash` transaction (see [Nested Safes](#nested-safes)). It
+is proposed to or confirmed on the child's queue at `child_nonce`, through the
+service for `child_network`, which the claim must set. The live check then
+requires that approval to be queued on the child. The parent transaction is not
+submitted: the Transaction Service accepts a proposal only from an owner or
+delegate of the parent, and the child Safe is the owner, not its signers. Once the
+parent is queued, by an owner or delegate of it, `--require-live` checks it as
+usual. Without that flag, a parent with nothing queued is a warning.
+
+`--attest` accepts owners only, not delegates. It was called `--propose` in
+v1.1.0, and that name still works with a warning.
 
 ## GitHub Action
 

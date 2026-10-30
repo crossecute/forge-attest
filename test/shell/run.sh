@@ -811,7 +811,7 @@ assert_eq "…without contacting the service" "$(posts)" "0"
 assert_eq "…and reports no proposal" "$(jq -r .proposal <<<"$gate_out")" "null"
 
 # An attested claim reaches propose.sh with the canonical form and hash it
-# checked. --attest implies --require-live, and the stub serves no live data
+# checked. --attest requires the live check, and the stub serves no live data
 # to safe_hashes.sh, so the run still ends NOT ATTESTED on the live check.
 sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e.toml" >"$TMP/e2e-propose.toml"
 stub_state 7 '[]'
@@ -876,13 +876,15 @@ assert_contains "…saying it was renamed" "$(cat "$TMP/gate.err")" "--propose i
 group "attest.sh: the live check reads one queued transaction"
 
 # A stand-in for the curl that safe_hashes.sh calls: the Safe's version, and
-# $LIVE/queue.json for its queue at a nonce.
+# $LIVE/queue.<safe>.json, or else $LIVE/queue.json, for its queue at a nonce.
 LIVE="$TMP/live"
 mkdir -p "$LIVE/bin"
 cat >"$LIVE/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 case "${@: -1}" in
-  */multisig-transactions/*) cat "$LIVE/queue.json" ;;
+  */multisig-transactions/*)
+    safe=$(grep -oiE '0x[0-9a-f]{40}' <<<"${@: -1}" | head -1)
+    if [[ -f "$LIVE/queue.${safe,,}.json" ]]; then cat "$LIVE/queue.${safe,,}.json"; else cat "$LIVE/queue.json"; fi ;;
   */api/v1/safes/*) echo '{"version":"1.3.0"}' ;;
   *) exit 22 ;;
 esac
@@ -892,7 +894,7 @@ live_tx() { # <canonical> [dataDecoded json] -> one queue entry
   jq -c --argjson d "${2:-null}" '{to, value, data, operation: (.operation | tonumber), safeTxGas,
     baseGas, gasPrice, gasToken, refundReceiver, nonce: (.nonce | tonumber), dataDecoded: $d}' "$1"
 }
-live_queue() { jq -s '{count: length, results: .}' >"$LIVE/queue.json"; }
+live_queue() { jq -s '{count: length, results: .}' >"$LIVE/${1:-queue.json}"; } # [file]
 live_run() { # <attest.sh args...> -> verdict on stdout, report in $TMP/live.err
   PATH="$LIVE/bin:$PATH" LIVE="$LIVE" bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json "$@" \
     2>"$TMP/live.err"
@@ -926,6 +928,72 @@ assert_eq "…because two hash lines are not read as one" "$(jq -r '.failures[]'
   "Safe Transaction Service unreachable or no tx at nonce 7"
 if grep -q $'\x1b' "$TMP/live.err"; then fail "…and its escape bytes reach the report"
 else pass "…and its escape bytes do not reach the report"; fi
+
+group "attest.sh --attest: a nested claim signs the child's approval"
+
+# The child's owners sign the approveHash transaction, never the parent's, so
+# that is what is submitted, to the child's queue, and what the live check needs.
+{ cat "$TMP/e2e-propose.toml"
+  printf 'child_safe    = "%s"\nchild_nonce   = "7"\nchild_network = "ethereum"\n' "$CHILD"
+} >"$TMP/e2e-attest-nested.toml"
+child_of() { # <parent hash> -> the approval's canonical form
+  bash "$NESTED" --parent-safe "$SAFE" --parent-hash "$1" --child-safe "$CHILD" --child-nonce 7 \
+    --chain-id 1 --safe-version "$(jq -r .safeVersion "$E2E_CANON")"
+}
+child_of "$E2E_HASH" >"$TMP/child-canon.json"
+CHILD_HASH=$(safe_tx_hash "$TMP/child-canon.json")
+CHILD_CS=$(cast to-check-sum-address "$CHILD")
+# propose.sh asks curl for the status code and safe_hashes.sh does not, which is
+# enough to send each to its own stub.
+BOTH="$TMP/both"
+mkdir -p "$BOTH/bin"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'for a in "$@"; do [[ "$a" == -w ]] && exec "$STUB/bin/curl" "$@"; done' \
+  'exec "$LIVE/bin/curl" "$@"' >"$BOTH/bin/curl"
+chmod +x "$BOTH/bin/curl"
+nested_attest() { # <config> [attest.sh args...] -> verdict on stdout, report in $TMP/na.err
+  PATH="$BOTH/bin:$PATH" STUB="$STUB" LIVE="$LIVE" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
+    bash "$ROOT/attest.sh" --config "$1" --json "${@:2}" --attest -- --private-key "$OWNER_PK" 2>"$TMP/na.err"
+}
+live_queue "queue.${SAFE,,}.json" </dev/null
+live_tx "$TMP/child-canon.json" | live_queue "queue.${CHILD,,}.json"
+
+stub_state 7 '[]'
+na_out=$(nested_attest "$TMP/e2e-attest-nested.toml")
+assert_eq "a nested claim is ATTESTED under --attest once its approval is queued" \
+  "$(jq -r .attested <<<"$na_out")" "true"
+assert_eq "…proposing the approval" "$(jq -r .proposal.action <<<"$na_out")" "proposed"
+assert_eq "…as the hash the child's owners sign" "$(jq -r .contractTransactionHash "$STUB/posted.json")" "$CHILD_HASH"
+assert_contains "…to the child's queue" "$(grep '^POST' "$STUB/log")" "/v2/safes/$CHILD_CS/multisig-transactions/"
+assert_contains "…skipping, not requiring, the parent's queue" "$(cat "$TMP/na.err")" \
+  "no tx at nonce 7: skipping"
+
+stub_state 7 "$(queued "$CHILD_HASH" "$OTHER")"
+na_out=$(nested_attest "$TMP/e2e-attest-nested.toml")
+assert_eq "an approval already queued is confirmed" "$(jq -r .proposal.action <<<"$na_out")" "confirmed"
+assert_contains "…on the approval's hash" "$(grep '^POST' "$STUB/log")" \
+  "/v1/multisig-transactions/$CHILD_HASH/confirmations/"
+
+stub_state 7 '[]'
+na_out=$(nested_attest "$TMP/e2e-attest-nested.toml" --require-live)
+assert_eq "--require-live still requires the parent's queue" "$(jq -r '.failures[]' <<<"$na_out")" \
+  "Safe Transaction Service unreachable or no tx at nonce 7"
+
+child_of "$OTHER_HASH" >"$TMP/child-other.json"
+live_tx "$TMP/child-other.json" | live_queue "queue.${CHILD,,}.json"
+stub_state 7 '[]'
+na_out=$(nested_attest "$TMP/e2e-attest-nested.toml")
+assert_eq "another approval queued on the child is NOT ATTESTED" "$(jq -r '.failures[]' <<<"$na_out")" \
+  "queued Safe tx on the child ($(safe_tx_hash "$TMP/child-other.json")) != attested ($CHILD_HASH)"
+
+sed 's/^child_network = "ethereum"/child_network = ""/' "$TMP/e2e-attest-nested.toml" \
+  >"$TMP/e2e-attest-nested-nonet.toml"
+stub_state 7 '[]'
+na_out=$(nested_attest "$TMP/e2e-attest-nested-nonet.toml")
+assert_eq "a nested claim without child_network is refused" "$(jq -r '.failures[]' <<<"$na_out")" \
+  "--attest needs child_network for a nested claim"
+assert_eq "…without contacting the service" "$(cat "$STUB/log" 2>/dev/null)" ""
+rm -f "$LIVE"/queue.0x*.json
 
 group "attest.sh: several claims from one producer"
 
@@ -1098,6 +1166,15 @@ assert_contains "an rpc_env that is not set is refused" \
 twin_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin.toml" --json 2>/dev/null)
 assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
   "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_out")" "2"
+# A nested claim's approval also takes a nonce, on the child.
+{ multi_head Twin
+  printf '\n[[run.claim]]\noutput_path = "out/a.json"\nsafe_address = "%s"\nsafe_nonce = "9"\n' "$SAFE"
+  printf '\n[[run.claim]]\noutput_path = "out/b.json"\nsafe_address = "%s"\nsafe_nonce = "4"\n' "$CHILD"
+  printf 'child_safe = "%s"\nchild_nonce = "9"\n' "$SAFE"
+} >"$TMP/twin-child.toml"
+twin_child_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin-child.toml" --json 2>/dev/null)
+assert_eq "a child approval at another claim's Safe and nonce is NOT ATTESTED" \
+  "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_child_out")" "2"
 
 group "attest.sh --attest: several claims"
 

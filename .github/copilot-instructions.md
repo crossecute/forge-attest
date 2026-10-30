@@ -84,9 +84,10 @@ Include it in the comment. If you could not write or run one, say so.
    Text from the service or the producer is filtered before it is printed. Under
    `--json`, stdout carries only the verdict document.
 5. **What is signed.** Under `--attest`, the typed data comes only from the
-   attested canonical form, the signature is checked against the attested hash
-   before anything is sent, and nothing is sent unless every offline check passed
-   and, with several claims, every claim's preflight passed.
+   attested canonical form (for a nested claim, the approval built from it), the
+   signature is checked against the attested hash before anything is sent, and
+   nothing is sent unless every offline check passed and, with several claims,
+   every claim's preflight passed.
    A service response can make the run refuse but must not change what is signed.
 6. **The claim and the clone.** The claim is read one way: no headers but `[[run]]`
    and `[[run.claim]]`, no repeated or unknown keys. Paths from it stay inside the
