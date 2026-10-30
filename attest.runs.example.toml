@@ -53,7 +53,7 @@ safe_network = ""
 safe_address = "0x<safe on sei>"
 safe_nonce   = "9"
 # No Transaction Service for this chain in lib/safe_hashes.sh: say so, rather
-# than let the live check skip. --propose lists it for import in Safe{Wallet}.
+# than let the live check skip. --attest lists it for import in Safe{Wallet}.
 live         = false
 expected_canonical_sha256 = "<sha256 of the canonical form>"
 expected_safe_tx_hash     = "0x<safeTxHash>"

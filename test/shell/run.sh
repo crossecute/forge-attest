@@ -7,10 +7,10 @@
 #   3. attest.sh:        a full end-to-end run against a synthetic producer repo
 #                         that emits a Transaction Builder batch
 #   4. propose.sh:       signing and submission against a stubbed Transaction
-#                         Service, and attest.sh --propose refusing unattested txs
+#                         Service, and attest.sh --attest refusing unattested txs
 #   5. skills:           the build-safe-tx template is byte-stable and attests
 #   6. several claims:   one producer run per chain or one run for many, the
-#                         completeness and deploy checks, and --propose across
+#                         completeness and deploy checks, and --attest across
 #                         chains with its status table
 #   7. summary.sh:       the action's job summary escapes what the claim controls
 #
@@ -799,24 +799,24 @@ PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/lib/propose.sh" --canonical "$E2
 assert_eq "a network name resolves through safe_hashes.sh's base URL" \
   "$(head -1 "$STUB/log")" "GET https://api.safe.global/tx-service/eth/api/v1/safes/$SAFE/"
 
-group "attest.sh --propose: only an attested transaction is sent"
+group "attest.sh --attest: only an attested transaction is sent"
 
 sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e-unpinned.toml" >"$TMP/e2e-propose-unpinned.toml"
 rm -f "$STUB/log"
 gate_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" \
-  --config "$TMP/e2e-propose-unpinned.toml" --json --propose -- --private-key "$OWNER_PK" 2>"$TMP/gate.err")
-assert_eq "an unattested claim is NOT ATTESTED under --propose" "$(jq -r .attested <<<"$gate_out")" "false"
-assert_contains "…saying it did not propose" "$(cat "$TMP/gate.err")" "not proposing: the offline checks did not attest"
+  --config "$TMP/e2e-propose-unpinned.toml" --json --attest -- --private-key "$OWNER_PK" 2>"$TMP/gate.err")
+assert_eq "an unattested claim is NOT ATTESTED under --attest" "$(jq -r .attested <<<"$gate_out")" "false"
+assert_contains "…saying it did not sign" "$(cat "$TMP/gate.err")" "not signing: the offline checks did not attest"
 assert_eq "…without contacting the service" "$(posts)" "0"
 assert_eq "…and reports no proposal" "$(jq -r .proposal <<<"$gate_out")" "null"
 
 # An attested claim reaches propose.sh with the canonical form and hash it
-# checked. --propose implies --require-live, and the stub serves no live data
+# checked. --attest implies --require-live, and the stub serves no live data
 # to safe_hashes.sh, so the run still ends NOT ATTESTED on the live check.
 sed 's/^safe_network.*/safe_network = "ethereum"/' "$TMP/e2e.toml" >"$TMP/e2e-propose.toml"
 stub_state 7 '[]'
 sent_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
-  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json --propose -- --private-key "$OWNER_PK" \
+  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose.toml" --json --attest -- --private-key "$OWNER_PK" \
   2>"$TMP/sent.err")
 assert_eq "an attested claim is proposed" "$(jq -c .proposal <<<"$sent_out")" \
   "{\"action\":\"proposed\",\"sender\":\"$OWNER\",\"url\":\"\"}"
@@ -843,15 +843,15 @@ safe_nonce   = ""
 EOF
 rm -f "$STUB/log"
 flat_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" SAFE_TX_SERVICE_URL=https://stub.invalid/tx-service/eth \
-  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose-flat.toml" --json --propose -- --private-key "$OWNER_PK" \
+  bash "$ROOT/attest.sh" --config "$TMP/e2e-propose-flat.toml" --json --attest -- --private-key "$OWNER_PK" \
   2>"$TMP/flat.err")
-assert_eq "a claim without safe_address and safe_nonce is NOT ATTESTED under --propose" \
+assert_eq "a claim without safe_address and safe_nonce is NOT ATTESTED under --attest" \
   "$(jq -r .attested <<<"$flat_out")" "false"
 assert_eq "…failing only for the missing fields" "$(jq -r '.failures[]' <<<"$flat_out")" \
-  "--propose needs safe_network, safe_address and safe_nonce"$'\n'"safe_network/address/nonce not fully set: live check required"
+  "--attest needs safe_network, safe_address and safe_nonce"$'\n'"safe_network/address/nonce not fully set: live check required"
 assert_eq "…without contacting the service" "$(cat "$STUB/log" 2>/dev/null)" ""
 
-# The same gap without --propose: --require-live alone must fail, not skip.
+# The same gap without --attest: --require-live alone must fail, not skip.
 sed '/^safe_network/d' "$TMP/e2e-propose-flat.toml" >"$TMP/e2e-flat.toml"
 if bash "$ROOT/attest.sh" --config "$TMP/e2e-flat.toml" >/dev/null 2>&1; then
   pass "a flat claim without safe_network, safe_address and safe_nonce is ATTESTED"
@@ -861,10 +861,17 @@ assert_eq "…but NOT ATTESTED under --require-live" "$(jq -r .attested <<<"$fla
 assert_eq "…failing only for the skipped live check" "$(jq -r '.failures[]' <<<"$flat_live_out")" \
   "safe_network/address/nonce not fully set: live check required"
 
-if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --propose >/dev/null 2>"$TMP/gate.err"; then
-  fail "--propose without wallet flags was accepted"
-else pass "--propose without wallet flags is refused"; fi
+if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --attest >/dev/null 2>"$TMP/gate.err"; then
+  fail "--attest without wallet flags was accepted"
+else pass "--attest without wallet flags is refused"; fi
 assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
+
+# v1.1.0 shipped the flag as --propose.
+old_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" \
+  --config "$TMP/e2e-propose-unpinned.toml" --json --propose -- --private-key "$OWNER_PK" 2>"$TMP/gate.err")
+assert_contains "--propose still works as --attest" "$(jq -r '.failures[]' <<<"$old_out")" \
+  "not signing: the offline checks did not attest"
+assert_contains "…saying it was renamed" "$(cat "$TMP/gate.err")" "--propose is now --attest"
 
 group "attest.sh: the live check reads one queued transaction"
 
@@ -1092,11 +1099,11 @@ twin_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin.toml" --json 2>/dev/null)
 assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
   "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_out")" "2"
 
-group "attest.sh --propose: several claims"
+group "attest.sh --attest: several claims"
 
 # Each claim names its own service, as two chains would have.
 propose_multi() { # <config> -> verdict on stdout, report in $TMP/pm.err
-  PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" --config "$1" --json --propose \
+  PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" --config "$1" --json --attest \
     -- --private-key "$OWNER_PK" 2>"$TMP/pm.err"
 }
 { multi_head Multi

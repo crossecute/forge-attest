@@ -18,16 +18,17 @@
 #  A flat attest.toml is one claim. One with [[run]] tables holds several runs
 #  of the producer, each with a [[run.claim]] per output file (lib/claims.sh).
 #
-#  With --propose, the attested transactions are also signed with the cast wallet
-#  flags given after `--` and submitted to the Safe Transaction Service (proposed,
-#  or confirmed if already queued), and the live check is then required. Nothing
-#  is signed unless every claim attests and every claim's preflight passes.
+#  With --attest, the signer also signs off on each attested transaction with the
+#  cast wallet flags given after `--` and submits that signature to the Safe
+#  Transaction Service: as a proposal when nothing is queued, or as a confirmation
+#  when the transaction already is. The live check is then required. Nothing is
+#  signed unless every claim attests and every claim's preflight passes.
 #
 #  Matching hashes across all layers prove the submitted Safe tx is exactly what
 #  the script produced.
 #
 #  Usage: ./attest.sh [--config attest.toml] [--require-live] [--json] [--keep] [--help]
-#                     [--propose -- <cast wallet flags, e.g. --ledger>]
+#                     [--attest -- <cast wallet flags, e.g. --ledger>]
 #
 #  --json emits a machine-readable verdict on stdout and moves the human report
 #  to stderr, so a caller gets both without parsing colours. The exit code is
@@ -44,8 +45,9 @@ CONFIG="$SCRIPT_DIR/attest.toml"
 REQUIRE_LIVE=0
 KEEP=0
 JSON=0
-PROPOSE=0
-PROPOSE_WALLET=()
+SUBMIT=0
+WALLET=()
+RENAMED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,17 +55,18 @@ while [[ $# -gt 0 ]]; do
     --require-live) REQUIRE_LIVE=1; shift ;;
     --json) JSON=1; shift ;;
     --keep) KEEP=1; shift ;;
-    --propose) PROPOSE=1; REQUIRE_LIVE=1; shift ;;
-    --) shift; PROPOSE_WALLET=("$@"); break ;;
+    --attest) SUBMIT=1; REQUIRE_LIVE=1; shift ;;
+    --propose) SUBMIT=1; REQUIRE_LIVE=1; RENAMED=1; shift ;;   # the v1.1.0 name
+    --) shift; WALLET=("$@"); break ;;
     -h|--help)
       grep -E '^#' "$0" | sed -E 's/^#\??//' | sed -E 's/^ //'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
-if [[ "$PROPOSE" == 1 ]]; then
-  (( ${#PROPOSE_WALLET[@]} )) || die "--propose needs the signer's cast wallet flags after --, e.g. -- --ledger"
-elif (( ${#PROPOSE_WALLET[@]} )); then
-  die "wallet flags after -- are only used with --propose"
+if [[ "$SUBMIT" == 1 ]]; then
+  (( ${#WALLET[@]} )) || die "--attest needs the signer's cast wallet flags after --, e.g. -- --ledger"
+elif (( ${#WALLET[@]} )); then
+  die "wallet flags after -- are only used with --attest"
 fi
 
 # In JSON mode stdout is reserved for the verdict document. Keep a handle on the
@@ -74,6 +77,7 @@ if [[ "$JSON" == 1 ]]; then
 else
   exec 3>/dev/null
 fi
+[[ "$RENAMED" == 1 ]] && warn "--propose is now --attest; the old name will be removed"
 
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 for bin in git forge cast jq sha256sum; do
@@ -562,14 +566,14 @@ for (( i = 0; i < n_claims; i++ )); do
   R_URL[i]=$(safe_ui_url "$prefix" "${R_SAFE[i]}" "${R_HASH[i]}")
 done
 
-# --- 7. propose: sign and submit the attested transactions --------------------
+# --- 7. attest: sign off on the attested transactions and submit -------------
 # Runs only when every offline check passed, so what is signed and sent is the
 # canonical form those checks hashed, never the producer's JSON as given. Every
 # claim's preflight runs before the first signature, so a refusal on one chain
 # cannot leave the others half-queued.
 TABLE=0
-if [[ "$PROPOSE" == 1 ]]; then
-  step "Proposing to Safe Transaction Service"
+if [[ "$SUBMIT" == 1 ]]; then
+  step "Signing off and submitting to Safe Transaction Service"
   eligible=() manual=() refused=0
   for (( i = 0; i < n_claims; i++ )); do
     if [[ "$(cfg "$i" live)" == false ]]; then manual+=("$i"); else eligible+=("$i"); fi
@@ -578,17 +582,17 @@ if [[ "$PROPOSE" == 1 ]]; then
     [[ -n "$(cfg "$i" child_safe)" ]] && refused=1
   done
   if [[ "$refused" == 1 ]]; then
-    record_fail "--propose does not support nested claims"
+    record_fail "--attest does not support nested claims"
   elif (( ${#FAILURES[@]} )); then
     refused=1
-    record_fail "not proposing: the offline checks did not attest"
+    record_fail "not signing: the offline checks did not attest"
   else
     for i in "${eligible[@]}"; do
       if [[ -z "$(cfg "$i" safe_network)" || -z "$(cfg "$i" safe_address)" || -z "$(cfg "$i" safe_nonce)" ]]; then
         # The live check below cannot run without all three, and it is what proves
         # the submission landed. Its failure would come only after the send.
         refused=1
-        record_fail "--propose needs safe_network, safe_address and safe_nonce" "$i"
+        record_fail "--attest needs safe_network, safe_address and safe_nonce" "$i"
       fi
     done
     if [[ -n "${SAFE_TX_SERVICE_URL:-}" ]] && (( ${#eligible[@]} > 1 )); then
@@ -622,7 +626,7 @@ if [[ "$PROPOSE" == 1 ]]; then
       status_set "$i" "… preflight"
       propose_args "$i"
       if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" --preflight \
-          -- "${PROPOSE_WALLET[@]}" 2>"$WORK/preflight.$i.log"); then
+          -- "${WALLET[@]}" 2>"$WORK/preflight.$i.log"); then
         eval "$out"   # sets PROPOSE_ACTION / PROPOSE_SENDER
         PLANNED[i]="$PROPOSE_ACTION" PRE_SENDER[i]="$PROPOSE_SENDER"
         case "$PROPOSE_ACTION" in
@@ -636,7 +640,7 @@ if [[ "$PROPOSE" == 1 ]]; then
         status_set "$i" "✗ refused: ${reason:-see log}"
         status_dirty
         cat "$WORK/preflight.$i.log" >&2
-        record_fail "proposal to the Safe Transaction Service failed" "$i"
+        record_fail "submission to the Safe Transaction Service failed" "$i"
       fi
     done
 
@@ -657,13 +661,13 @@ if [[ "$PROPOSE" == 1 ]]; then
       status_set "$i" "… sign on device"
       status_dirty
       propose_args "$i"
-      if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" -- "${PROPOSE_WALLET[@]}"); then
+      if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" -- "${WALLET[@]}"); then
         eval "$out"   # sets PROPOSE_ACTION / PROPOSE_SENDER
         R_ACTION[i]="$PROPOSE_ACTION" R_SENDER[i]="$PROPOSE_SENDER"
         status_set "$i" "✓ $PROPOSE_ACTION"
       else
         status_set "$i" "✗ failed: re-run"
-        record_fail "proposal to the Safe Transaction Service failed" "$i"
+        record_fail "submission to the Safe Transaction Service failed" "$i"
       fi
     done
   fi
@@ -700,7 +704,7 @@ for (( i = 0; i < n_claims; i++ )); do
 
     if [[ "$live_rc" == 2 ]]; then
       # A competing transaction is evidence, not an outage: owners shown the queue
-      # could sign the other one. --propose refuses the same state.
+      # could sign the other one. --attest refuses the same state.
       record_fail "several transactions are queued at nonce $safe_nonce" "$i"
       [[ "$TABLE" == 1 ]] && status_set "$i" "✗ several transactions queued"
     elif [[ "$live_rc" != 0 ]]; then
