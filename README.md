@@ -52,11 +52,11 @@ anyone reviewed.
 ./attest.sh --require-live        # fail (don't skip) if the live check can't run
 ./attest.sh --json                # machine-readable verdict on stdout
 ./attest.sh --keep                # keep the temp clone for inspection
-./attest.sh --propose -- --ledger # also sign and submit it (see below)
+./attest.sh --attest -- --ledger  # also sign off and submit it (see below)
 ```
 
 Requirements: `git`, `foundry` (`forge` + `cast`), `jq`, `sha256sum`, `bash`, and
-`curl` for `--propose`.
+`curl` for `--attest`.
 
 Exit code is the verdict: `0` attested, `1` not.
 
@@ -92,9 +92,10 @@ caller gets both without scraping colours:
 
 A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` means
 the live check did not run, not that it passed. `nested` is `null` unless
-the claim names a child Safe. `proposal` is `null` unless `--propose` signed and
+the claim names a child Safe. `proposal` is `null` unless `--attest` signed and
 submitted the transaction, and is then `{ "action", "sender", "url" }`, where `url`
-is its Safe{Wallet} page or `""` (see below). `failures` lists exactly what a
+is the submitted transaction's Safe{Wallet} page (for a nested claim, the child's
+approval) or `""` (see below). `failures` lists exactly what a
 `NOT ATTESTED` verdict is based on.
 
 A config with several claims (see [Several transactions from one
@@ -118,14 +119,15 @@ Each claim carries its own verdict and failures. The top-level `failures` lists
 them all, each prefixed with the claim's `output_path`, plus any failure of a run
 itself.
 
-### Proposing from the command line
+### Signing off from the command line
 
-`--propose` removes the step of importing the producer's JSON into the Safe UI. Once
-the offline checks pass, it signs the transaction and submits it to the Safe
-Transaction Service itself:
+`--attest` is how an owner signs off on a transaction once it has attested. It also
+removes the step of importing the producer's JSON into the Safe UI. Once the offline
+checks pass, it signs the transaction and submits the signature to the Safe
+Transaction Service itself, as the proposal or as a later confirmation:
 
 ```bash
-SAFE_API_KEY=<key> ./attest.sh --config my.toml --propose -- --ledger
+SAFE_API_KEY=<key> ./attest.sh --config my.toml --attest -- --ledger
 ```
 
 Everything after `--` is passed to `cast wallet sign`, so any signer `cast` supports
@@ -146,7 +148,7 @@ never sees the key. In order, it:
 5. proposes the transaction if nothing is queued, or adds a confirmation if this
    exact hash already is. A signer who has already confirmed is not asked to sign
    again;
-6. runs the live check, which `--propose` makes required, so the run ends
+6. runs the live check, which `--attest` makes required, so the run ends
    `ATTESTED` only once the queued transaction is the attested one.
 
 The first owner to run it proposes and each later owner confirms, with the same
@@ -166,7 +168,7 @@ already queued are confirmed or skipped, and no one signs twice. A claim with
 `live = false` (a chain with no service in the table) is not submitted. It is
 listed with its hash, for import in the Safe{Wallet} UI.
 
-While it runs, `--propose` keeps a table with one row per claim: chain, Safe,
+While it runs, `--attest` keeps a table with one row per claim: chain, Safe,
 nonce, `safeTxHash` and where that submission stands. On a terminal the table
 updates in place, and each hash links to the transaction's Safe{Wallet} page. In
 CI, in a pipe, or with `FORGE_ATTEST_LINKS=0`, it prints one line per change
@@ -181,8 +183,18 @@ default it is taken to be the network's path in the Transaction Service URL (`et
 claim can set `safe_ui_prefix` to override it. A claim with its own service gets
 no link unless it sets one, since Safe{Wallet} reads the public service.
 
-`--propose` does not support nested claims yet, and accepts owners only, not
-delegates.
+For a nested claim, the signer is an owner of the child Safe, and what they sign
+is the child's `approveHash` transaction (see [Nested Safes](#nested-safes)). It
+is proposed to or confirmed on the child's queue at `child_nonce`, through the
+service for `child_network`, which the claim must set. The live check then
+requires that approval to be queued on the child. The parent transaction is not
+submitted: the Transaction Service accepts a proposal only from an owner or
+delegate of the parent, and the child Safe is the owner, not its signers. Once the
+parent is queued, by an owner or delegate of it, `--require-live` checks it as
+usual. Without that flag, a parent with nothing queued is a warning.
+
+`--attest` accepts owners only, not delegates. It was called `--propose` in
+v1.1.0, and that name still works with a warning.
 
 ## GitHub Action
 
@@ -487,7 +499,7 @@ The model writes source code, never calldata. What owners sign is still the outp
 of a reviewed script at a pinned commit, checked by the same five checks. The
 skills take addresses, decimals and signatures only from you, your repo, or an
 on-chain read, and never handle keys. They propose only through
-`attest.sh --propose`, after the claim attests, with the signer's own wallet.
+`attest.sh --attest`, after the claim attests, with the signer's own wallet.
 
 This does not widen what forge-attest proves. A prompt the model misreads produces
 a script that attests cleanly, as any wrong script would (see "Does not catch"
@@ -536,7 +548,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   (check #5).
 - Another transaction queued at the same nonce, on the Safe or (with
   `child_network`) on the child → `NOT ATTESTED` even without `--require-live`,
-  since the owners could sign the other one. `--propose` refuses the same state.
+  since the owners could sign the other one. `--attest` refuses the same state.
 - A nested approval pointing at a different transaction than the one under review.
   The approval is re-derived from the parent, never read back from it.
 - A transaction the script produced but no claim covers → the run fails unless
@@ -553,7 +565,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   requires already knowing the honest answer and gains an attacker nothing. Treat
   an unreachable service as an unknown, not as a pass. That is what
   `--require-live` is for.
-- Under `--propose`, the same service also reports the Safe's owners, nonce and
+- Under `--attest`, the same service also reports the Safe's owners, nonce and
   queue, which decide whether to propose, confirm or refuse. A lying service can
   make the run refuse, or send a signature over the attested hash to a service
   that discards it. It cannot change what is signed: the typed data is built from
@@ -611,7 +623,7 @@ hash derivations do not agree.
 
 ```bash
 forge test            # Solidity: hashing, MultiSend packing, every JSON format
-./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --propose
+./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --attest
 ```
 
 The shell suite starts two local `anvil` chains for the multi-chain tests, and
@@ -648,8 +660,8 @@ forge-attest/
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
 │   ├── claims.sh                 # reads attest.toml into one model, refusing ambiguous TOML
-│   ├── propose.sh                # signs and submits an attested tx (--propose)
-│   ├── status.sh                 # the per-chain table --propose keeps
+│   ├── propose.sh                # signs and submits an attested tx (--attest)
+│   ├── status.sh                 # the per-chain table --attest keeps
 │   ├── summary.sh                # renders the verdict as the action's job summary
 │   ├── common.sh                 # logging, tiny TOML reader, network table
 │   └── VENDORED.md               # provenance of the vendored tool

@@ -18,16 +18,18 @@
 #  A flat attest.toml is one claim. One with [[run]] tables holds several runs
 #  of the producer, each with a [[run.claim]] per output file (lib/claims.sh).
 #
-#  With --propose, the attested transactions are also signed with the cast wallet
-#  flags given after `--` and submitted to the Safe Transaction Service (proposed,
-#  or confirmed if already queued), and the live check is then required. Nothing
-#  is signed unless every claim attests and every claim's preflight passes.
+#  With --attest, the signer also signs off on each attested transaction with the
+#  cast wallet flags given after `--` and submits that signature to the Safe
+#  Transaction Service: as a proposal when nothing is queued, or as a confirmation
+#  when the transaction already is. For a nested claim that is the child Safe's
+#  approveHash transaction. The live check is then required. Nothing is signed
+#  unless every claim attests and every claim's preflight passes.
 #
 #  Matching hashes across all layers prove the submitted Safe tx is exactly what
 #  the script produced.
 #
 #  Usage: ./attest.sh [--config attest.toml] [--require-live] [--json] [--keep] [--help]
-#                     [--propose -- <cast wallet flags, e.g. --ledger>]
+#                     [--attest -- <cast wallet flags, e.g. --ledger>]
 #
 #  --json emits a machine-readable verdict on stdout and moves the human report
 #  to stderr, so a caller gets both without parsing colours. The exit code is
@@ -44,8 +46,9 @@ CONFIG="$SCRIPT_DIR/attest.toml"
 REQUIRE_LIVE=0
 KEEP=0
 JSON=0
-PROPOSE=0
-PROPOSE_WALLET=()
+SUBMIT=0
+WALLET=()
+RENAMED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -53,17 +56,18 @@ while [[ $# -gt 0 ]]; do
     --require-live) REQUIRE_LIVE=1; shift ;;
     --json) JSON=1; shift ;;
     --keep) KEEP=1; shift ;;
-    --propose) PROPOSE=1; REQUIRE_LIVE=1; shift ;;
-    --) shift; PROPOSE_WALLET=("$@"); break ;;
+    --attest) SUBMIT=1; shift ;;
+    --propose) SUBMIT=1; RENAMED=1; shift ;;   # the v1.1.0 name
+    --) shift; WALLET=("$@"); break ;;
     -h|--help)
       grep -E '^#' "$0" | sed -E 's/^#\??//' | sed -E 's/^ //'; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
 done
-if [[ "$PROPOSE" == 1 ]]; then
-  (( ${#PROPOSE_WALLET[@]} )) || die "--propose needs the signer's cast wallet flags after --, e.g. -- --ledger"
-elif (( ${#PROPOSE_WALLET[@]} )); then
-  die "wallet flags after -- are only used with --propose"
+if [[ "$SUBMIT" == 1 ]]; then
+  (( ${#WALLET[@]} )) || die "--attest needs the signer's cast wallet flags after --, e.g. -- --ledger"
+elif (( ${#WALLET[@]} )); then
+  die "wallet flags after -- are only used with --attest"
 fi
 
 # In JSON mode stdout is reserved for the verdict document. Keep a handle on the
@@ -74,6 +78,7 @@ if [[ "$JSON" == 1 ]]; then
 else
   exec 3>/dev/null
 fi
+[[ "$RENAMED" == 1 ]] && warn "--propose is now --attest; the old name will be removed"
 
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 for bin in git forge cast jq sha256sum; do
@@ -321,18 +326,18 @@ done
 
 # --- 3-6. each claim ----------------------------------------------------------
 R_SHA=() R_CANON_SHA=() R_DOMAIN=() R_MESSAGE=() R_HASH=() R_SOL=() R_CHILD=()
-R_CHAIN=() R_SAFE=() R_NONCE=() R_URL=() R_LIVE=() R_ACTION=() R_SENDER=()
+R_CHAIN=() R_SAFE=() R_NONCE=() R_URL=() R_CHILD_URL=() R_LIVE=() R_ACTION=() R_SENDER=()
 
 attest_claim() { # <claim index>
   local i="$1" out_json canonical norm_args sol_child
   local output_path input_format batch_mode multisend_address safe_version chain_id
   local safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce
-  local child_safe child_nonce child_network expected_child_hash
+  local child_safe child_nonce expected_child_hash
   local expected_sha expected_canonical_sha expected_hash got_sha canonical_sha cast_hash
   local sol_hash="" child_hash="" run
   for k in output_path input_format batch_mode multisend_address safe_version chain_id \
            safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce \
-           child_safe child_nonce child_network; do
+           child_safe child_nonce; do
     printf -v "$k" '%s' "$(cfg "$i" "$k")"
   done
   expected_sha=$(cfg "$i" expected_output_sha256)
@@ -495,24 +500,6 @@ attest_claim() { # <claim index>
     if [[ -n "$expected_child_hash" && "$child_hash" != "$expected_child_hash" ]]; then
       record_fail "nested approval hash != pinned expected_child_safe_tx_hash ($expected_child_hash)" "$i"
     fi
-
-    # The child's own queue, if asked for. Catches a different transaction being
-    # queued on the child and presented to its owners as "the approval".
-    if [[ -n "$child_network" ]]; then
-      local child_rc=0 child_live msg
-      child_live=$(live_safe_tx_hash "$child_network" "$child_safe" "$child_nonce" \
-        "$WORK/child_hashes.out") || child_rc=$?
-      if [[ "$child_rc" == 2 ]]; then
-        record_fail "several transactions are queued on the child at nonce $child_nonce" "$i"
-      elif [[ "$child_rc" != 0 ]]; then
-        msg="child Safe queue unreachable or nothing at nonce $child_nonce"
-        if [[ "$REQUIRE_LIVE" == 1 ]]; then record_fail "$msg" "$i"; else warn "$msg: skipping"; fi
-      elif [[ "$child_live" == "$child_hash" ]]; then
-        ok "the transaction queued on the child is this approval"
-      else
-        record_fail "queued on child ($child_live) != constructed approval ($child_hash)" "$i"
-      fi
-    fi
   fi
   R_CHILD[i]="$child_hash"
 
@@ -526,7 +513,7 @@ attest_claim() { # <claim index>
 
 for (( i = 0; i < n_claims; i++ )); do
   R_SHA[i]="" R_CANON_SHA[i]="" R_DOMAIN[i]="" R_MESSAGE[i]="" R_HASH[i]="" R_SOL[i]=""
-  R_CHILD[i]="" R_CHAIN[i]="" R_SAFE[i]="" R_NONCE[i]="" R_URL[i]="" R_LIVE[i]=""
+  R_CHILD[i]="" R_CHAIN[i]="" R_SAFE[i]="" R_NONCE[i]="" R_URL[i]="" R_CHILD_URL[i]="" R_LIVE[i]=""
   R_ACTION[i]="" R_SENDER[i]=""
   if (( n_claims > 1 )); then echo; step "Claim $((i + 1))/$n_claims: $(cfg "$i" output_path)"; fi
   # A claim whose output was not produced has nothing to check.
@@ -534,15 +521,19 @@ for (( i = 0; i < n_claims; i++ )); do
 done
 
 # Only one transaction executes at a Safe's nonce, so two claims for the same one
-# cannot both be what the owners sign.
+# cannot both be what the owners sign. A nested claim also takes its child's nonce.
+nonce_slots() { # <claim index>: one "chain safe nonce" line per transaction it signs
+  [[ -n "${R_HASH[$1]}" ]] || return 0
+  printf '%s %s %s\n' "${R_CHAIN[$1]}" "$(lc "${R_SAFE[$1]}")" "${R_NONCE[$1]}"
+  [[ -n "${R_CHILD[$1]}" ]] \
+    && printf '%s %s %s\n' "${R_CHAIN[$1]}" "$(lc "$(cfg "$1" child_safe)")" "$(cfg "$1" child_nonce)"
+  return 0
+}
 if (( n_claims > 1 )); then
-  dups=$(for (( i = 0; i < n_claims; i++ )); do
-    [[ -n "${R_HASH[i]}" ]] && printf '%s %s %s\n' "${R_CHAIN[i]}" "$(lc "${R_SAFE[i]}")" "${R_NONCE[i]}"
-  done | sort | uniq -d)
+  dups=$(for (( i = 0; i < n_claims; i++ )); do nonce_slots "$i"; done | sort | uniq -d)
   if [[ -n "$dups" ]]; then
     for (( i = 0; i < n_claims; i++ )); do
-      [[ -n "${R_HASH[i]}" ]] || continue
-      grep -qxF -- "${R_CHAIN[i]} $(lc "${R_SAFE[i]}") ${R_NONCE[i]}" <<<"$dups" \
+      nonce_slots "$i" | grep -qxF -f - <(printf '%s\n' "$dups") \
         && record_fail "another claim is for the same Safe, chain and nonce" "$i"
     done
   fi
@@ -560,35 +551,39 @@ for (( i = 0; i < n_claims; i++ )); do
     [[ "$svc" == */tx-service/* ]] && prefix="${svc##*/}"
   fi
   R_URL[i]=$(safe_ui_url "$prefix" "${R_SAFE[i]}" "${R_HASH[i]}")
+  # The child is on the parent's chain, so the same prefix applies.
+  [[ -n "${R_CHILD[i]}" ]] && R_CHILD_URL[i]=$(safe_ui_url "$prefix" "$(cfg "$i" child_safe)" "${R_CHILD[i]}")
 done
 
-# --- 7. propose: sign and submit the attested transactions --------------------
+# --- 7. attest: sign off on the attested transactions and submit -------------
 # Runs only when every offline check passed, so what is signed and sent is the
 # canonical form those checks hashed, never the producer's JSON as given. Every
 # claim's preflight runs before the first signature, so a refusal on one chain
-# cannot leave the others half-queued.
+# cannot leave the others half-queued. A nested claim's signer is an owner of the
+# child, so what it signs is the constructed approval, sent to the child's queue.
 TABLE=0
-if [[ "$PROPOSE" == 1 ]]; then
-  step "Proposing to Safe Transaction Service"
+if [[ "$SUBMIT" == 1 ]]; then
+  step "Signing off and submitting to Safe Transaction Service"
   eligible=() manual=() refused=0
   for (( i = 0; i < n_claims; i++ )); do
     if [[ "$(cfg "$i" live)" == false ]]; then manual+=("$i"); else eligible+=("$i"); fi
   done
-  for (( i = 0; i < n_claims; i++ )); do
-    [[ -n "$(cfg "$i" child_safe)" ]] && refused=1
-  done
-  if [[ "$refused" == 1 ]]; then
-    record_fail "--propose does not support nested claims"
-  elif (( ${#FAILURES[@]} )); then
+  if (( ${#FAILURES[@]} )); then
     refused=1
-    record_fail "not proposing: the offline checks did not attest"
+    record_fail "not signing: the offline checks did not attest"
   else
     for i in "${eligible[@]}"; do
-      if [[ -z "$(cfg "$i" safe_network)" || -z "$(cfg "$i" safe_address)" || -z "$(cfg "$i" safe_nonce)" ]]; then
+      if [[ -n "$(cfg "$i" child_safe)" ]]; then
+        # Step 6 already required safe_address and child_nonce.
+        if [[ -z "$(cfg "$i" child_network)" ]]; then
+          refused=1
+          record_fail "--attest needs child_network for a nested claim" "$i"
+        fi
+      elif [[ -z "$(cfg "$i" safe_network)" || -z "$(cfg "$i" safe_address)" || -z "$(cfg "$i" safe_nonce)" ]]; then
         # The live check below cannot run without all three, and it is what proves
         # the submission landed. Its failure would come only after the send.
         refused=1
-        record_fail "--propose needs safe_network, safe_address and safe_nonce" "$i"
+        record_fail "--attest needs safe_network, safe_address and safe_nonce" "$i"
       fi
     done
     if [[ -n "${SAFE_TX_SERVICE_URL:-}" ]] && (( ${#eligible[@]} > 1 )); then
@@ -598,10 +593,17 @@ if [[ "$PROPOSE" == 1 ]]; then
   fi
 
   if [[ "$refused" == 0 ]]; then
+    # A nested claim's row is the approval: the transaction this signer signs.
     for (( i = 0; i < n_claims; i++ )); do
-      ST_NAME[i]="$(cfg "$i" safe_network) ${R_CHAIN[i]}"
-      [[ -n "$(cfg "$i" safe_network)" ]] || ST_NAME[i]="chain ${R_CHAIN[i]}"
-      ST_SAFE[i]="${R_SAFE[i]}" ST_NONCE[i]="${R_NONCE[i]}" ST_HASH[i]="${R_HASH[i]}" ST_URL[i]="${R_URL[i]}"
+      if [[ -n "${R_CHILD[i]}" ]]; then
+        net=$(cfg "$i" child_network)
+        ST_SAFE[i]=$(cfg "$i" child_safe) ST_NONCE[i]=$(cfg "$i" child_nonce)
+        ST_HASH[i]="${R_CHILD[i]}" ST_URL[i]="${R_CHILD_URL[i]}"
+      else
+        net=$(cfg "$i" safe_network)
+        ST_SAFE[i]="${R_SAFE[i]}" ST_NONCE[i]="${R_NONCE[i]}" ST_HASH[i]="${R_HASH[i]}" ST_URL[i]="${R_URL[i]}"
+      fi
+      ST_NAME[i]="${net:-chain} ${R_CHAIN[i]}"
     done
     TABLE=1
     status_init
@@ -610,9 +612,15 @@ if [[ "$PROPOSE" == 1 ]]; then
     propose_args() { # <claim index>
       local svc
       svc=$(cfg "$1" safe_tx_service_url)
-      PROPOSE_ARGS=(--canonical "$WORK/canonical.$1.json" --hash "${R_HASH[$1]}"
-        --network "$(cfg "$1" safe_network)"
-        --origin "forge-attest $(run_cfg "$(cfg "$1" run)" script)@${producer_commit:0:12}")
+      if [[ -n "${R_CHILD[$1]}" ]]; then
+        PROPOSE_ARGS=(--canonical "$WORK/child.$1.json" --hash "${R_CHILD[$1]}"
+          --network "$(cfg "$1" child_network)")
+      else
+        PROPOSE_ARGS=(--canonical "$WORK/canonical.$1.json" --hash "${R_HASH[$1]}"
+          --network "$(cfg "$1" safe_network)")
+      fi
+      PROPOSE_ARGS+=(--origin "forge-attest $(run_cfg "$(cfg "$1" run)" script)@${producer_commit:0:12}")
+      # The child is on the parent's chain, so the claim's service serves both.
       [[ -n "$svc" ]] && PROPOSE_ARGS+=(--service-url "$svc")
       return 0
     }
@@ -622,7 +630,7 @@ if [[ "$PROPOSE" == 1 ]]; then
       status_set "$i" "… preflight"
       propose_args "$i"
       if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" --preflight \
-          -- "${PROPOSE_WALLET[@]}" 2>"$WORK/preflight.$i.log"); then
+          -- "${WALLET[@]}" 2>"$WORK/preflight.$i.log"); then
         eval "$out"   # sets PROPOSE_ACTION / PROPOSE_SENDER
         PLANNED[i]="$PROPOSE_ACTION" PRE_SENDER[i]="$PROPOSE_SENDER"
         case "$PROPOSE_ACTION" in
@@ -636,7 +644,7 @@ if [[ "$PROPOSE" == 1 ]]; then
         status_set "$i" "✗ refused: ${reason:-see log}"
         status_dirty
         cat "$WORK/preflight.$i.log" >&2
-        record_fail "proposal to the Safe Transaction Service failed" "$i"
+        record_fail "submission to the Safe Transaction Service failed" "$i"
       fi
     done
 
@@ -657,19 +665,55 @@ if [[ "$PROPOSE" == 1 ]]; then
       status_set "$i" "… sign on device"
       status_dirty
       propose_args "$i"
-      if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" -- "${PROPOSE_WALLET[@]}"); then
+      if out=$(bash "$SCRIPT_DIR/lib/propose.sh" "${PROPOSE_ARGS[@]}" -- "${WALLET[@]}"); then
         eval "$out"   # sets PROPOSE_ACTION / PROPOSE_SENDER
         R_ACTION[i]="$PROPOSE_ACTION" R_SENDER[i]="$PROPOSE_SENDER"
         status_set "$i" "✓ $PROPOSE_ACTION"
       else
         status_set "$i" "✗ failed: re-run"
-        record_fail "proposal to the Safe Transaction Service failed" "$i"
+        record_fail "submission to the Safe Transaction Service failed" "$i"
       fi
     done
   fi
 fi
 
 # --- 8. live integrity: compare against the Safe Transaction Service ----------
+# live_check <claim> <network> <safe> <nonce> <expected hash> <required> <where>
+# Compares what is queued at <nonce> with <expected hash>. A competing or
+# different transaction always fails; one that cannot be read fails only when
+# <required>. <where> is "" for the claim's Safe and " on the child" for the
+# approval. Sets LIVE_HASH and, for the status table, LIVE_STATE.
+live_check() {
+  local i="$1" net="$2" safe="$3" nonce="$4" want="$5" required="$6" where="$7" rc=0 msg
+  local log="$WORK/safe_hashes.$i${where:+.child}.out"
+  LIVE_HASH="" LIVE_STATE=""
+  LIVE_HASH=$(live_safe_tx_hash "$net" "$safe" "$nonce" "$log") || rc=$?
+  if [[ "$rc" == 2 ]]; then
+    # A competing transaction is evidence, not an outage: owners shown the queue
+    # could sign the other one. --attest refuses the same state.
+    record_fail "several transactions are queued$where at nonce $nonce" "$i"
+    LIVE_STATE="✗ several transactions queued"
+  elif [[ "$rc" != 0 ]]; then
+    LIVE_HASH=""
+    msg="Safe Transaction Service unreachable or no tx$where at nonce $nonce"
+    if [[ "$required" == 1 ]]; then
+      cat "$log" >&2; record_fail "$msg" "$i"
+    else
+      warn "$msg: skipping (use --require-live to enforce)"
+    fi
+    LIVE_STATE="${ST_STATE[i]:-} · not in queue"
+  else
+    printf '    safeTx   : %s\n' "$LIVE_HASH"
+    if [[ "$LIVE_HASH" == "$want" ]]; then
+      ok "queued Safe tx$where matches the attested hash"
+      LIVE_STATE="${ST_STATE[i]:-} · queued"
+    else
+      record_fail "queued Safe tx$where ($LIVE_HASH) != attested ($want)" "$i"
+      LIVE_STATE="✗ queued ≠ attested"
+    fi
+  fi
+}
+
 for (( i = 0; i < n_claims; i++ )); do
   claim_tag=""
   (( n_claims > 1 )) && claim_tag=" ($(cfg "$i" output_path))"
@@ -677,51 +721,41 @@ for (( i = 0; i < n_claims; i++ )); do
   safe_network=$(cfg "$i" safe_network)
   safe_address=$(cfg "$i" safe_address)
   safe_nonce=$(cfg "$i" safe_nonce)
+  child_network=$(cfg "$i" child_network)
+  # --attest proves its own submission landed. For a nested claim that is the
+  # approval on the child; the parent is queued by whoever can propose there.
+  parent_required="$REQUIRE_LIVE"
+  [[ "$SUBMIT" == 1 && -z "${R_CHILD[i]}" ]] && parent_required=1
   if [[ -z "${R_HASH[i]}" ]]; then
     warn "no transaction derived: skipping live check"
+    continue
   elif [[ "$(cfg "$i" live)" == false ]]; then
     # Stated in the claim, so a chain with no service is a reviewed exception,
     # not a check that silently could not run.
     warn "live = false: no Transaction Service to check this claim against"
+    continue
   elif [[ -z "$safe_network" || -z "$safe_address" || -z "$safe_nonce" ]]; then
     # A flat SafeTx carries its own Safe and nonce, so a claim for one can attest
     # with these blank. That is a live check that cannot run, not one that passed.
     msg="safe_network/address/nonce not fully set"
-    if [[ "$REQUIRE_LIVE" == 1 ]]; then
+    if [[ "$parent_required" == 1 ]]; then
       record_fail "$msg: live check required" "$i"
     else
       warn "$msg: skipping live check"
     fi
   else
-    live_out="$WORK/safe_hashes.$i.out"
-    live_rc=0
-    live_hash=$(live_safe_tx_hash "$safe_network" "$safe_address" "$safe_nonce" "$live_out") \
-      || live_rc=$?
-
-    if [[ "$live_rc" == 2 ]]; then
-      # A competing transaction is evidence, not an outage: owners shown the queue
-      # could sign the other one. --propose refuses the same state.
-      record_fail "several transactions are queued at nonce $safe_nonce" "$i"
-      [[ "$TABLE" == 1 ]] && status_set "$i" "✗ several transactions queued"
-    elif [[ "$live_rc" != 0 ]]; then
-      msg="Safe Transaction Service unreachable or no tx at nonce $safe_nonce"
-      if [[ "$REQUIRE_LIVE" == 1 ]]; then
-        cat "$live_out" >&2; record_fail "$msg" "$i"
-      else
-        warn "$msg: skipping (use --require-live to enforce)"
-      fi
-      [[ "$TABLE" == 1 ]] && status_set "$i" "${ST_STATE[i]} · not in queue"
-    else
-      R_LIVE[i]="$live_hash"
-      printf '    safeTx   : %s\n' "$live_hash"
-      if [[ "$live_hash" == "${R_HASH[i]}" ]]; then
-        ok "queued Safe tx matches the script-derived hash"
-        [[ "$TABLE" == 1 ]] && status_set "$i" "${ST_STATE[i]} · queued"
-      else
-        record_fail "queued Safe tx ($live_hash) != script-derived (${R_HASH[i]})" "$i"
-        [[ "$TABLE" == 1 ]] && status_set "$i" "✗ queued ≠ attested"
-      fi
-    fi
+    live_check "$i" "$safe_network" "$safe_address" "$safe_nonce" "${R_HASH[i]}" "$parent_required" ""
+    R_LIVE[i]="$LIVE_HASH"
+    [[ "$TABLE" == 1 && -z "${R_CHILD[i]}" ]] && status_set "$i" "$LIVE_STATE"
+  fi
+  # The child's own queue catches a different transaction being presented to its
+  # owners as "the approval".
+  if [[ -n "${R_CHILD[i]}" && -n "$child_network" ]]; then
+    child_required="$REQUIRE_LIVE"
+    [[ "$SUBMIT" == 1 ]] && child_required=1
+    live_check "$i" "$child_network" "$(cfg "$i" child_safe)" "$(cfg "$i" child_nonce)" \
+      "${R_CHILD[i]}" "$child_required" " on the child"
+    [[ "$TABLE" == 1 ]] && status_set "$i" "$LIVE_STATE"
   fi
 done
 if [[ "$TABLE" == 1 ]]; then
@@ -763,6 +797,7 @@ claim_json() { # <claim index>
     --arg proposal_action  "${R_ACTION[i]}" \
     --arg proposal_sender  "${R_SENDER[i]}" \
     --arg url              "${R_URL[i]}" \
+    --arg proposal_url     "$([[ -n "${R_CHILD[i]}" ]] && echo "${R_CHILD_URL[i]}" || echo "${R_URL[i]}")" \
     '{
       output_path: $output_path, run: $run, attested: ($failures | length == 0),
       safe: { address: $safe_address, nonce: $safe_nonce,
@@ -781,7 +816,7 @@ claim_json() { # <claim index>
         { safe: $child_safe, nonce: $child_nonce, safe_tx: $child_safe_tx }
       end),
       proposal: (if $proposal_action == "" then null else
-        { action: $proposal_action, sender: $proposal_sender, url: $url }
+        { action: $proposal_action, sender: $proposal_sender, url: $proposal_url }
       end),
       url: $url,
       failures: $failures
