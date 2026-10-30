@@ -406,6 +406,8 @@ claude --plugin-dir ./forge-attest
 
 ## Threat model
 
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
 **Catches**
 - The Forge script was changed (any commit other than the pinned one → different
   output → sha256 + hash mismatch).
@@ -517,6 +519,7 @@ forge-attest/
 ├── action.yml                    # GitHub Action wrapping attest.sh
 ├── attest.toml                   # the claim being attested
 ├── attest.batch.example.toml     # a commented claim for a Transaction Builder batch
+├── SECURITY.md                   # how to report a vulnerability
 ├── lib/
 │   ├── normalize.sh              # any supported JSON -> canonical SafeTx (check #2)
 │   ├── nested.sh                 # constructs a child Safe's approveHash tx
