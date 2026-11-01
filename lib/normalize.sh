@@ -8,7 +8,9 @@
 # Supported input formats (auto-detected, override with --format):
 #
 #   safe-tx      A flat object already carrying the full EIP-712 SafeTx field set
-#                (what forge-attest's own example producer emits).
+#                (what forge-attest's own example producer emits). Every field but
+#                `safeVersion` and `data` must be present: a missing one is an
+#                error, never filled in from flags.
 #
 #   call         A flat { to, value?, data?, operation? } with none of the SafeTx
 #                binding fields. Folded exactly as a one-entry tx-array, so the
@@ -164,8 +166,10 @@ jget() { printf '%s' "$J" | jq -r "$1 // empty" 2>/dev/null || true; }
 
 # --- format detection ---------------------------------------------------------
 # An object with `to` is `call` when it carries none of these, `safe-tx` when it
-# carries any. readAny in test/SafeTx.sol uses the same key list; the two must agree.
+# carries any. A partial SafeTx is then refused below rather than completed from
+# flags. readAny in test/SafeTx.sol uses the same key list; the two must agree.
 SAFE_TX_BINDING_KEYS='["safe","chainId","safeVersion","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"]'
+SAFE_TX_REQUIRED_KEYS='["safe","chainId","to","value","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"]'
 binds_safe_tx() {
   [[ "$(jq_root -r --argjson k "$SAFE_TX_BINDING_KEYS" 'type == "object" and any(has($k[]); .)')" == "true" ]]
 }
@@ -186,7 +190,12 @@ fi
 case "$FORMAT" in safe-tx|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
-if [[ "$FORMAT" == "call" ]]; then
+if [[ "$FORMAT" == "safe-tx" ]]; then
+  [[ "$(jq_root -r 'type')" == "object" ]] || die "safe-tx must be an object"
+  missing=$(jq_root -r --argjson k "$SAFE_TX_REQUIRED_KEYS" \
+    '[$k[] as $f | select(.[$f] == null or .[$f] == "") | $f] | join(", ")')
+  [[ -z "$missing" ]] || die "safe-tx is missing $missing; a SafeTx must be complete (a bare call is the 'call' format)"
+elif [[ "$FORMAT" == "call" ]]; then
   [[ "$(jq_root -r 'type')" == "object" && -n "$(jget '.to')" ]] || die "call must be an object with 'to'"
   ! binds_safe_tx || die "call carries SafeTx fields; a SafeTx must be complete and use the 'safe-tx' format"
 fi

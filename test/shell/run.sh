@@ -202,8 +202,20 @@ assert_eq "--batch-mode multisend wraps a call like a one-entry array" \
      bash "$NORMALIZE" --input "$TMP/call-arr.json" --safe "$SAFE" --nonce 42 --chain-id 1 \
        --batch-mode multisend | canonical_sha)"
 
+# Any SafeTx field makes the object a SafeTx, and a SafeTx is never completed from
+# config: a producer that dropped a field gets an error, not a guessed value.
+assert_contains "a SafeTx missing a field is refused, even with the flag given" \
+  "$(jq 'del(.nonce)' "$FIX/safe-tx-single.json" >"$TMP/partial.json"
+     bash "$NORMALIZE" --input "$TMP/partial.json" --safe "$SAFE" --nonce 42 2>&1 >/dev/null)" \
+  "safe-tx is missing nonce"
+assert_contains "a SafeTx with an empty field is refused" \
+  "$(jq '.safeTxGas = ""' "$FIX/safe-tx-single.json" >"$TMP/blank.json"
+     bash "$NORMALIZE" --input "$TMP/blank.json" --safe "$SAFE" --nonce 42 2>&1 >/dev/null)" \
+  "safe-tx is missing safeTxGas"
 assert_contains "--format call refuses an object carrying SafeTx fields" \
   "$(normalize_err safe-tx-single.json --format call)" "call carries SafeTx fields"
+assert_contains "--format safe-tx refuses a bare call" \
+  "$(normalize_err call.json --format safe-tx --chain-id 1)" "safe-tx is missing safe, chainId"
 
 group "normalize.sh: guard rails"
 

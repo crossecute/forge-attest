@@ -241,8 +241,9 @@ format automatically, or you name it with `input_format`.
 
 ### `safe-tx`: a complete transaction
 
-A flat object carrying the full EIP-712 `SafeTx` field set. All scalars are quoted
-strings so large integers survive JSON:
+A flat object carrying the full EIP-712 `SafeTx` field set. Every field except
+`safeVersion` and `data` must be present: a missing one is an error, never filled
+in from the claim. All scalars are quoted strings so large integers survive JSON:
 
 ```json
 {
