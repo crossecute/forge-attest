@@ -406,6 +406,50 @@ contract SafeTxHashTest {
         _assertEq(SafeTxLib.toSafeTx(inner, b, 0).hash(), 0xb9bb6f19acb8d7459a17726181922c4e66223f5c7b6b0d17e120e11e8a13f774, "bare array");
     }
 
+    // ------------------------------------------------------- format 4: plain call
+
+    /// The call inside `safe-tx-single.json`, bound to that file's Safe, nonce
+    /// and chain, is the same transaction and must hash to the same value.
+    function test_PlainCall_MatchesPinnedHash() external view {
+        string memory json = _read("call.json");
+        require(!SafeTxLib.bindsSafeTx(json), "a call binds no SafeTx field");
+
+        SafeTxLib.Binding memory b = _binding();
+        b.chainId = 1; // must come from config
+        SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, b);
+
+        require(t.to == 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48, "sent directly, not wrapped");
+        require(t.operation == 0, "operation defaults to CALL");
+        _assertEq(t.hash(), 0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27bdd507902bdf534, "plain call");
+        _assertEq(t.hash(), SafeTxLib.readCanonical(_read("safe-tx-single.json")).hash(), "call vs complete SafeTx");
+    }
+
+    function test_PlainCallRequiresChainIdFromConfig() external {
+        (bool ok, bytes memory err) =
+            address(this).call(abi.encodeCall(this.readAnyExternal, (_read("call.json"), _binding())));
+        require(!ok, "expected revert");
+        require(_contains(err, "no chainId"), "wrong revert");
+    }
+
+    /// A call may be a delegatecall, as a one-entry array may, and is signed as one.
+    function test_PlainCallKeepsItsOperation() external view {
+        SafeTxLib.Binding memory b = _binding();
+        b.chainId = 1;
+        SafeTxLib.SafeTx memory t =
+            SafeTxLib.readAny('{"to":"0x000000000000000000000000000000000000dEaD","operation":1}', b);
+        require(t.operation == 1 && t.to == address(0xdEaD) && t.data.length == 0, "delegatecall");
+    }
+
+    /// An object with any SafeTx field is a SafeTx, and a partial one is refused
+    /// rather than completed from the binding.
+    function test_PartialSafeTxIsNotCompletedFromConfig() external {
+        SafeTxLib.Binding memory b = _binding();
+        b.chainId = 1;
+        string memory partialTx = '{"to":"0x000000000000000000000000000000000000dEaD","nonce":"42"}';
+        (bool ok,) = address(this).call(abi.encodeCall(this.readAnyExternal, (partialTx, b)));
+        require(!ok, "a partial SafeTx was completed");
+    }
+
     // --------------------------------------------------------------- guard rails
 
     /// A UI-exported batch may describe a call as an ABI method plus inputs with a

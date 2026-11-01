@@ -13,12 +13,14 @@ producer_script = "script/BuildSafeTx.s.sol:BuildSafeTx"
 output_path     = "out/safe-tx.json"                    # relative to the producer repo root
 
 # --- Shape of the producer's JSON ----------------------------------------------
-# input_format: auto (default) | safe-tx | tx-builder | tx-array
+# input_format: auto (default) | safe-tx | call | tx-builder | tx-array
 #   safe-tx     a flat object carrying the full EIP-712 SafeTx field set
+#   call        a flat { to, value?, data?, operation? } with no Safe binding; the
+#               Safe, nonce and chain_id come from this claim
 #   tx-builder  a Safe{Wallet} Transaction Builder batch, shaped as `{ version,
 #               chainId, createdAt, meta, transactions: [...] }`. This is what
 #               FraxFinance's `SafeTxHelper.writeTxs` and "export batch" emit
-#   tx-array    a bare JSON array of { to, value, data, operation? }
+#   tx-array    a bare JSON array of { to, value?, data?, operation? }
 input_format = "auto"
 
 # batch_mode: how a batch becomes the single transaction owners sign.
@@ -68,10 +70,10 @@ expected_canonical_sha256 = "9057b9be885254f9dd33b26d85d42f9cdc10b1010d66e2046fb
 expected_safe_tx_hash     = "0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27bdd507902bdf534"
 
 # --- The Safe this transaction belongs to ---------------------------------------
-# For batch formats these are *inputs to the hash*, not just live-check settings:
-# a Transaction Builder export carries no Safe address and no nonce, so the same
-# batch signs differently on a different Safe or at a different nonce. Supplying
-# them here is what binds the batch to one specific transaction.
+# For batch and call formats these are *inputs to the hash*, not just live-check
+# settings: a Transaction Builder export or a bare call carries no Safe address
+# and no nonce, so the same batch signs differently on a different Safe or at a
+# different nonce. Supplying them here is what binds it to one transaction.
 #
 # `safe_network` additionally enables the live comparison against the Safe
 # Transaction Service. Leave it blank to skip that check (under --require-live,

@@ -78,6 +78,8 @@ assert_eq "detects a bare transaction array" \
   "$(fmt tx-array.json --summary --chain-id 1)" "tx-array"
 assert_eq "detects a flat SafeTx object" \
   "$(fmt safe-tx-single.json --summary)" "safe-tx"
+assert_eq "detects a plain call" \
+  "$(fmt call.json --summary --chain-id 1)" "call"
 
 group "normalize.sh: canonical form"
 
@@ -176,6 +178,45 @@ assert_contains "a file declaring no Safe still needs one" \
   "$(bash "$NORMALIZE" --input "$FIX/tx-builder-frax-optimism.json" --nonce 42 2>&1 >/dev/null)" \
   "no Safe address"
 
+group "normalize.sh: a plain call"
+
+# call.json is the call inside safe-tx-single.json. Bound to that file's Safe,
+# nonce and chain it is the same transaction, so the canonical bytes must match.
+assert_eq "a call bound by config is the complete SafeTx it describes" \
+  "$(normalize call.json --chain-id 1 | canonical_sha)" \
+  "$(normalize safe-tx-single.json | canonical_sha)"
+assert_contains "a call needs a chainId from config" \
+  "$(normalize_err call.json)" "no chainId"
+assert_contains "a call needs a Safe address from config" \
+  "$(bash "$NORMALIZE" --input "$FIX/call.json" --nonce 42 --chain-id 1 2>&1 >/dev/null)" "no Safe address"
+assert_contains "a call needs a nonce from config" \
+  "$(bash "$NORMALIZE" --input "$FIX/call.json" --safe "$SAFE" --chain-id 1 2>&1 >/dev/null)" "no Safe nonce"
+assert_eq "a call keeps its operation, as a one-entry array does" \
+  "$(jq '.operation = "1"' "$FIX/call.json" >"$TMP/call-dc.json"
+     bash "$NORMALIZE" --input "$TMP/call-dc.json" --safe "$SAFE" --nonce 42 --chain-id 1 \
+       | jq -r '[.to, .operation] | join(" ")')" \
+  "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48 1"
+assert_eq "--batch-mode multisend wraps a call like a one-entry array" \
+  "$(normalize call.json --chain-id 1 --batch-mode multisend | canonical_sha)" \
+  "$(jq '[.]' "$FIX/call.json" >"$TMP/call-arr.json"
+     bash "$NORMALIZE" --input "$TMP/call-arr.json" --safe "$SAFE" --nonce 42 --chain-id 1 \
+       --batch-mode multisend | canonical_sha)"
+
+# Any SafeTx field makes the object a SafeTx, and a SafeTx is never completed from
+# config: a producer that dropped a field gets an error, not a guessed value.
+assert_contains "a SafeTx missing a field is refused, even with the flag given" \
+  "$(jq 'del(.nonce)' "$FIX/safe-tx-single.json" >"$TMP/partial.json"
+     bash "$NORMALIZE" --input "$TMP/partial.json" --safe "$SAFE" --nonce 42 2>&1 >/dev/null)" \
+  "safe-tx is missing nonce"
+assert_contains "a SafeTx with an empty field is refused" \
+  "$(jq '.safeTxGas = ""' "$FIX/safe-tx-single.json" >"$TMP/blank.json"
+     bash "$NORMALIZE" --input "$TMP/blank.json" --safe "$SAFE" --nonce 42 2>&1 >/dev/null)" \
+  "safe-tx is missing safeTxGas"
+assert_contains "--format call refuses an object carrying SafeTx fields" \
+  "$(normalize_err safe-tx-single.json --format call)" "call carries SafeTx fields"
+assert_contains "--format safe-tx refuses a bare call" \
+  "$(normalize_err call.json --format safe-tx --chain-id 1)" "safe-tx is missing safe, chainId"
+
 group "normalize.sh: guard rails"
 
 assert_contains "rejects a contractMethod entry with no encoded data" \
@@ -246,7 +287,7 @@ cross_check() { # <label> <fixture> [normalize args...]
   # is given exactly the same binding and any divergence is a real one.
   local force=""; [[ " $* " == *" --batch-mode multisend "* ]] && force=1
   local version=""; [[ " $* " == *" --safe-version "* ]] && version="1.4.1"
-  local chain=""; [[ "$fixture" == "tx-array.json" ]] && chain="1"
+  local chain=""; [[ " $* " == *" --chain-id 1 "* ]] && chain="1"
   local multisend=""
   [[ " $* " == *" --multisend "* ]] && multisend="0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"
   local gas_price=""; [[ " $* " == *" --gas-price "* ]] && gas_price="1000"
@@ -272,6 +313,8 @@ cross_check "single-transaction batch"        tx-builder-single.json
 cross_check "single-transaction batch, forced multiSend" \
                                               tx-builder-single.json --batch-mode multisend
 cross_check "bare transaction array"          tx-array.json --chain-id 1
+cross_check "plain call"                      call.json --chain-id 1
+cross_check "plain call, forced multiSend"    call.json --chain-id 1 --batch-mode multisend
 cross_check "batch declaring its own Safe"    tx-builder-self-binding.json
 cross_check "non-zero gas fields from config" tx-builder-frax-optimism.json --gas-price 1000 --safe-tx-gas 50000
 cross_check "Safe 1.4.1 MultiSendCallOnly"    tx-builder-frax-optimism.json --safe-version 1.4.1
@@ -283,6 +326,10 @@ cross_check "explicit MultiSend, inner delegatecall" \
 assert_eq "Frax batch hashes to the pinned value" \
   "$(safe_tx_hash "$canon_frax")" \
   "0xa55af81f3e8e946ba3989ba04fe1fa0685a104114c479e05f0367bba8c712680"
+normalize call.json --chain-id 1 >"$TMP/call.json"
+assert_eq "plain call hashes to the pinned value" \
+  "$(safe_tx_hash "$TMP/call.json")" \
+  "0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27bdd507902bdf534"
 
 # --------------------------------------------------------------- nested Safes
 

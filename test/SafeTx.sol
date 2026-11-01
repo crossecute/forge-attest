@@ -90,8 +90,8 @@ library SafeTxLib {
     ///      has to travel alongside.
     bytes4 internal constant APPROVE_HASH_SELECTOR = 0xd4d9bdcd;
 
-    /// @notice What a batch cannot tell us and the config must supply.
-    /// @dev The gas/refund fields are here because a batch format never carries
+    /// @notice What a batch or call cannot tell us and the config must supply.
+    /// @dev The gas/refund fields are here because neither format ever carries
     ///      them. They are almost always zero, which is what the Safe UI submits.
     ///      They are still inputs to the hash, so a config that sets them has to
     ///      reach this side too, or the two derivations silently disagree.
@@ -295,23 +295,37 @@ library SafeTxLib {
 
         txs = new InnerTx[](n);
         for (uint256 i = 0; i < n; i++) {
-            string memory at = string.concat(base, "[", vm.toString(i), "]");
-            require(
-                !vm.keyExistsJson(json, string.concat(at, ".contractMethod"))
-                    || _optionalBytes(json, string.concat(at, ".data")).length > 0,
-                "SafeTxLib: contractMethod without encoded data"
-            );
-            txs[i] = InnerTx({
-                to: vm.parseJsonAddress(json, string.concat(at, ".to")),
-                value: vm.keyExistsJson(json, string.concat(at, ".value"))
-                    ? vm.parseJsonUint(json, string.concat(at, ".value"))
-                    : 0,
-                data: _optionalBytes(json, string.concat(at, ".data")),
-                operation: vm.keyExistsJson(json, string.concat(at, ".operation"))
-                    ? uint8(vm.parseJsonUint(json, string.concat(at, ".operation")))
-                    : 0
-            });
+            txs[i] = _readInner(json, string.concat(base, "[", vm.toString(i), "]"));
         }
+    }
+
+    /// @notice Read a plain call `{ to, value?, data?, operation? }` as the
+    ///         one-entry batch it is folded as.
+    function readCall(string memory json) internal view returns (InnerTx[] memory txs) {
+        txs = new InnerTx[](1);
+        txs[0] = _readInner(json, "");
+    }
+
+    /// @notice True when the root object carries any SafeTx field a call lacks.
+    /// @dev Such an object is read as a complete SafeTx, so a partial one reverts
+    ///      instead of being completed from the binding. `lib/normalize.sh` uses
+    ///      the same key list; the two must agree on which format a file is.
+    function bindsSafeTx(string memory json) internal view returns (bool) {
+        string[9] memory keys = [
+            ".safe",
+            ".chainId",
+            ".safeVersion",
+            ".safeTxGas",
+            ".baseGas",
+            ".gasPrice",
+            ".gasToken",
+            ".refundReceiver",
+            ".nonce"
+        ];
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (vm.keyExistsJson(json, keys[i])) return true;
+        }
+        return false;
     }
 
     /// @notice chainId from a batch JSON, or 0 when the batch doesn't carry one
@@ -345,10 +359,32 @@ library SafeTxLib {
             if (b.safe == address(0)) b.safe = declared;
             return toSafeTx(readBatch(json), b, readChainId(json));
         }
+        if (vm.keyExistsJson(json, ".to") && !bindsSafeTx(json)) {
+            return toSafeTx(readCall(json), b, 0);
+        }
         return readCanonical(json);
     }
 
     // ----------------------------------------------------------------- helpers
+
+    /// @dev One `{ to, value?, data?, operation? }` entry at JSON path `at`.
+    function _readInner(string memory json, string memory at) private view returns (InnerTx memory) {
+        require(
+            !vm.keyExistsJson(json, string.concat(at, ".contractMethod"))
+                || _optionalBytes(json, string.concat(at, ".data")).length > 0,
+            "SafeTxLib: contractMethod without encoded data"
+        );
+        return InnerTx({
+            to: vm.parseJsonAddress(json, string.concat(at, ".to")),
+            value: vm.keyExistsJson(json, string.concat(at, ".value"))
+                ? vm.parseJsonUint(json, string.concat(at, ".value"))
+                : 0,
+            data: _optionalBytes(json, string.concat(at, ".data")),
+            operation: vm.keyExistsJson(json, string.concat(at, ".operation"))
+                ? uint8(vm.parseJsonUint(json, string.concat(at, ".operation")))
+                : 0
+        });
+    }
 
     /// @dev `data` is routinely absent or explicitly `null` for plain value
     ///      transfers, which `parseJsonBytes` refuses outright. Only that case may

@@ -241,8 +241,9 @@ format automatically, or you name it with `input_format`.
 
 ### `safe-tx`: a complete transaction
 
-A flat object carrying the full EIP-712 `SafeTx` field set. All scalars are quoted
-strings so large integers survive JSON:
+A flat object carrying the full EIP-712 `SafeTx` field set. Every field except
+`safeVersion` and `data` must be present: a missing one is an error, never filled
+in from the claim. All scalars are quoted strings so large integers survive JSON:
 
 ```json
 {
@@ -254,6 +255,23 @@ strings so large integers survive JSON:
   "nonce": "42"
 }
 ```
+
+### `call`: just the call
+
+An object with the call and none of the `SafeTx` binding fields:
+
+```json
+{ "to": "0x…", "value": "0", "data": "0x…" }
+```
+
+It is read exactly as a one-entry `tx-array`. `value` and `data` default to `0` and
+`0x`. `operation` may be given and defaults to `0`; a call with `"operation": "1"`
+is signed as a `DELEGATECALL` to `to`, so review it as one. The Safe, nonce and
+chain id must come from the claim (`safe_address`, `safe_nonce`, `chain_id`), as
+must any non-zero gas fields. An object with `to` is detected as `call` when it
+carries none of `safe`, `chainId`, `safeVersion`, `safeTxGas`, `baseGas`,
+`gasPrice`, `gasToken`, `refundReceiver` or `nonce`, and as `safe-tx` when it
+carries any of them. An array of such calls is the `tx-array` format.
 
 ### `tx-builder`: a Safe{Wallet} Transaction Builder batch
 
@@ -279,7 +297,7 @@ config.
 
 ### What a batch does *not* tell you
 
-A batch carries no Safe address, no nonce and no gas fields. **It is not yet a
+A batch (and a `call`) carries no Safe address, no nonce and no gas fields. **It is not yet a
 transaction.** It becomes one only when bound to a specific Safe at a specific nonce
 and folded into the single call owners actually sign:
 
@@ -289,7 +307,7 @@ and folded into the single call owners actually sign:
   Override with `batch_mode = "multisend"`.
 
 So `safe_address` and `safe_nonce` in `attest.toml` are *inputs to the hash* for
-batch formats, not just live-check settings. The same batch on a different Safe, or
+batch and call formats, not just live-check settings. The same batch on a different Safe, or
 at a different nonce, is a different transaction and will not match a pin.
 
 The schema does have a slot for the Safe, `meta.createdFromSafeAddress`, and

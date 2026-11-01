@@ -18,8 +18,8 @@ import {Vm, SafeTxLib} from "./SafeTx.sol";
 ///         Inputs come from env (set by attest.sh):
 ///           ATTEST_JSON                    path to the producer's JSON, under ./out
 ///           ATTEST_EXPECTED_SAFE_TX_HASH   the hash to assert against
-///           ATTEST_SAFE                    Safe address       (batch formats)
-///           ATTEST_NONCE                   Safe nonce         (batch formats)
+///           ATTEST_SAFE                    Safe address       (batch and call formats)
+///           ATTEST_NONCE                   Safe nonce         (batch and call formats)
 ///           ATTEST_CHAIN_ID                chain id           (optional; "" = from JSON)
 ///           ATTEST_SAFE_VERSION            Safe version       (optional; "" = 1.3.0)
 ///           ATTEST_MULTISEND               MultiSend override (optional)
@@ -48,7 +48,7 @@ contract AttestTest {
         b.safeVersion = vm.envOr("ATTEST_SAFE_VERSION", string(""));
         b.multiSend = _envAddress("ATTEST_MULTISEND");
         b.forceMultiSend = keccak256(bytes(vm.envOr("ATTEST_FORCE_MULTISEND", string("")))) == keccak256("1");
-        // Batch formats carry no gas/refund fields, so they come from the same
+        // Batch and call formats carry no gas/refund fields, so they come from the same
         // config the bash side reads. Omitting them here would make a non-zero
         // config diverge between the two derivations.
         b.safeTxGas = _envUint("ATTEST_SAFE_TX_GAS");
