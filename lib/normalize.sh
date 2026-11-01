@@ -20,14 +20,14 @@
 #                FraxFinance's `SafeTxHelper.writeTxs` emits, and the shape the
 #                Safe UI's "export batch" gives you:
 #                  { version, chainId, createdAt, meta, transactions: [
-#                      { to, value, data, operation? }, ... ] }
+#                      { to, value?, data?, operation? }, ... ] }
 #                A batch carries no Safe address, nonce or gas fields, so those
 #                must be supplied via flags. Multi-transaction batches are packed
 #                into a single `multiSend(bytes)` delegatecall exactly as the Safe
 #                UI does, which is what the owners actually sign.
 #
-#   tx-array     A bare JSON array of { to, value, data, operation? }. Treated
-#                the same as tx-builder, with chainId supplied via flags.
+#   tx-array     A bare JSON array of { to, value?, data?, operation? }.
+#                Treated the same as tx-builder, with chainId supplied via flags.
 #
 # The canonical output is deterministic: fixed key order, all scalars quoted, all
 # hex lowercased. Its sha256 is therefore stable across producers even when the
