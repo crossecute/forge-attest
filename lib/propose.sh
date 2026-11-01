@@ -6,14 +6,17 @@
 #             when anything else is queued at that nonce.
 #
 # Usage:  propose.sh --canonical <safe-tx.json> --hash <safeTxHash> --network <name>
-#                    [--origin <text>] -- <cast wallet flags, e.g. --ledger>
+#                    [--service-url <base>] [--origin <text>] [--preflight]
+#                    -- <cast wallet flags, e.g. --ledger>
 # Output: KEY=VALUE lines on stdout, human log on stderr:
 #           PROPOSE_ACTION=proposed|confirmed|already-confirmed
 #           PROPOSE_SENDER=0x...
+#         With --preflight it stops before signing, and PROPOSE_ACTION is what a
+#         full run would do. Nothing is sent.
 #
 # Env:    SAFE_API_KEY         sent as a Bearer token when set
-#         SAFE_TX_SERVICE_URL  service base without `/api`, overriding the one
-#                              looked up for --network (self-hosted, tests)
+#         SAFE_TX_SERVICE_URL  service base without `/api`, used when
+#                              --service-url is not given (self-hosted, tests)
 #
 # Keys never pass through this script: signing is `cast wallet sign` with the
 # caller's wallet flags. The typed data is built from the canonical form and the
@@ -28,6 +31,7 @@ source "$SCRIPT_DIR/common.sh"
 exec 3>&1 1>&2
 
 canonical="" hash="" network="" origin="forge-attest"
+service_url="${SAFE_TX_SERVICE_URL:-}" preflight=0
 WALLET=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --hash)      hash=$(lc "$2"); shift 2 ;;
     --network)   network="$2"; shift 2 ;;
     --origin)    origin="$2"; shift 2 ;;
+    --service-url) service_url="$2"; shift 2 ;;
+    --preflight) preflight=1; shift ;;
     --) shift; WALLET=("$@"); break ;;
     *) die "propose.sh: unknown argument: $1" ;;
   esac
@@ -64,21 +70,12 @@ eval "$(bash "$SCRIPT_DIR/derive.sh" "$canonical")"
   || die "canonical form hashes to $(lc "$SAFE_TX_HASH"), not the attested $hash"
 
 # --- service URL --------------------------------------------------------------
-# The network table is read as data from the vendored safe_hashes.sh, so the
-# live check and this script resolve a network name to the same service.
-map_lookup() { # <array name> <key>
-  sed -n -E "/^declare -A -r $1=\(/,/^\)/ s/^[[:space:]]*\[\"$2\"\]=\"(.*)\"$/\1/p" \
-    "$SCRIPT_DIR/safe_hashes.sh"
-}
-if [[ -n "${SAFE_TX_SERVICE_URL:-}" ]]; then
-  base="${SAFE_TX_SERVICE_URL%/}"
+if [[ -n "$service_url" ]]; then
+  base="${service_url%/}"
 else
-  base=$(map_lookup API_URLS "$network")
+  base=$(network_service "$network")
   [[ -n "$base" ]] || die "unknown network '$network': not in lib/safe_hashes.sh"
-  base_url=$(sed -n -E 's/^readonly BASE_URL="(.*)"$/\1/p' "$SCRIPT_DIR/safe_hashes.sh")
-  [[ -n "$base_url" ]] || die "could not read BASE_URL from lib/safe_hashes.sh"
-  base=${base/\$\{BASE_URL\}/$base_url}
-  net_chain=$(map_lookup CHAIN_IDS "$network")
+  net_chain=$(network_lookup CHAIN_IDS "$network")
   [[ "$net_chain" == "$chain_id" ]] \
     || die "network '$network' is chain $net_chain but the transaction is for chain $chain_id"
 fi
@@ -141,6 +138,11 @@ if (( queued )); then
   action=confirmed
 else
   action=proposed
+fi
+if [[ "$preflight" == 1 ]]; then
+  ok "would be $action by $sender"
+  printf 'PROPOSE_ACTION=%s\nPROPOSE_SENDER=%s\n' "$action" "$sender" >&3
+  exit 0
 fi
 
 # --- sign ---------------------------------------------------------------------

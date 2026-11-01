@@ -48,7 +48,9 @@ outputs:
     description: '"true" when every check passed.'
     value: ${{ steps.attest.outputs.attested }}
   safe-tx-hash:
-    description: The EIP-712 digest the Safe's owners sign.
+    description: >
+      The EIP-712 digest the Safe's owners sign. Empty for a config with [[run]]
+      tables; read each claim's from the json output.
     value: ${{ steps.attest.outputs.safe-tx-hash }}
   canonical-sha256:
     description: sha256 of the normalised SafeTx, stable across formatting drift.
@@ -116,8 +118,8 @@ runs:
 
         {
           echo "attested=$(jq -r '.attested'                  "$out/attest.json")"
-          echo "safe-tx-hash=$(jq -r '.hashes.safe_tx'        "$out/attest.json")"
-          echo "canonical-sha256=$(jq -r '.hashes.canonical_sha256' "$out/attest.json")"
+          echo "safe-tx-hash=$(jq -r '.hashes.safe_tx // ""'  "$out/attest.json")"
+          echo "canonical-sha256=$(jq -r '.hashes.canonical_sha256 // ""' "$out/attest.json")"
           echo "child-safe-tx-hash=$(jq -r '.nested.safe_tx // ""'  "$out/attest.json")"
           echo "json<<$delim"
           cat "$out/attest.json"

@@ -5,7 +5,8 @@ These are for Copilot code review. They cover what a review should look for.
 ## What this repo is
 
 A verifier that proves a queued Gnosis Safe transaction is exactly the output of a
-pinned Forge script. `attest.sh` clones the producer at a pinned commit, re-runs its
+pinned Forge script. `attest.sh` reads the claim through `lib/claims.sh` (one claim,
+or several runs and claims), clones the producer at a pinned commit, re-runs its
 script, folds the JSON into one canonical SafeTx (`lib/normalize.sh`), derives the
 EIP-712 `safeTxHash` with `cast` (`lib/derive.sh`) and again in Solidity
 (`test/Attest.t.sol`, `test/SafeTx.sol`), and compares it with the Safe Transaction
@@ -84,10 +85,12 @@ Include it in the comment. If you could not write or run one, say so.
    `--json`, stdout carries only the verdict document.
 5. **What is signed.** Under `--propose`, the typed data comes only from the
    attested canonical form, the signature is checked against the attested hash
-   before anything is sent, and nothing is sent unless every offline check passed.
+   before anything is sent, and nothing is sent unless every offline check passed
+   and, with several claims, every claim's preflight passed.
    A service response can make the run refuse but must not change what is signed.
-6. **The claim and the clone.** The claim is read one way: no `[table]` headers or
-   repeated keys. Paths from it stay inside the clone. The producer's commit is
+6. **The claim and the clone.** The claim is read one way: no headers but `[[run]]`
+   and `[[run.claim]]`, no repeated or unknown keys. Paths from it stay inside the
+   clone. Every file a run writes is claimed or listed as unclaimed. The producer's commit is
    checked out and verified by full SHA. Nothing a producer commits (an output file,
    a symlink) can stand in for what its script writes.
 7. **The Action and workflows.** Inputs reach `run:` blocks through `env:`, never

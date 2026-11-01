@@ -39,6 +39,24 @@ toml_get() {
 # normalise a hex string to lowercase 0x-prefixed
 lc() { printf '%s' "${1,,}"; }
 
+# --- network table ------------------------------------------------------------
+# Read as data from the vendored safe_hashes.sh, so the live check, propose.sh
+# and the status links resolve a network name the same way.
+COMMON_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+network_lookup() { # <API_URLS|CHAIN_IDS> <network>
+  sed -n -E "/^declare -A -r $1=\(/,/^\)/ s/^[[:space:]]*\[\"$2\"\]=\"(.*)\"$/\1/p" \
+    "$COMMON_DIR/safe_hashes.sh"
+}
+# Prints the service base URL for <network>, or nothing if it is not in the table.
+network_service() { # <network>
+  local base base_url
+  base=$(network_lookup API_URLS "$1")
+  [[ -n "$base" ]] || return 0
+  base_url=$(sed -n -E 's/^readonly BASE_URL="(.*)"$/\1/p' "$COMMON_DIR/safe_hashes.sh")
+  [[ -n "$base_url" ]] || die "could not read BASE_URL from lib/safe_hashes.sh"
+  printf '%s' "${base/\$\{BASE_URL\}/$base_url}"
+}
+
 # Filter for text from an untrusted source before it is printed: drops colour
 # codes, then every byte outside printable ASCII except tab and newline, so the
 # text cannot carry escapes that rewrite the terminal.
