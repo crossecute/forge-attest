@@ -10,6 +10,10 @@
 #   safe-tx      A flat object already carrying the full EIP-712 SafeTx field set
 #                (what forge-attest's own example producer emits).
 #
+#   call         A flat { to, value?, data?, operation? } with none of the SafeTx
+#                binding fields. Folded exactly as a one-entry tx-array, so the
+#                Safe, nonce, chainId and gas fields all come from flags.
+#
 #   tx-builder   A Safe{Wallet} Transaction Builder batch. This is the shape
 #                FraxFinance's `SafeTxHelper.writeTxs` emits, and the shape the
 #                Safe UI's "export batch" gives you:
@@ -33,9 +37,9 @@
 #
 # Options:
 #   --input PATH            source JSON (required)
-#   --format FMT            auto (default) | safe-tx | tx-builder | tx-array
-#   --safe ADDR             Safe address        (required for batches)
-#   --nonce N               Safe nonce          (required for batches)
+#   --format FMT            auto (default) | safe-tx | call | tx-builder | tx-array
+#   --safe ADDR             Safe address        (required for batches and calls)
+#   --nonce N               Safe nonce          (required for batches and calls)
 #   --chain-id N            chain id            (required if absent from JSON)
 #   --safe-version V        Safe contract version, default 1.3.0
 #   --batch-mode MODE       auto (default) | multisend | single
@@ -159,6 +163,13 @@ jq_root() { printf '%s' "$J" | jq "$@"; }
 jget() { printf '%s' "$J" | jq -r "$1 // empty" 2>/dev/null || true; }
 
 # --- format detection ---------------------------------------------------------
+# An object with `to` is `call` when it carries none of these, `safe-tx` when it
+# carries any. readAny in test/SafeTx.sol uses the same key list; the two must agree.
+SAFE_TX_BINDING_KEYS='["safe","chainId","safeVersion","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"]'
+binds_safe_tx() {
+  [[ "$(jq_root -r --argjson k "$SAFE_TX_BINDING_KEYS" 'type == "object" and any(has($k[]); .)')" == "true" ]]
+}
+
 if [[ "$FORMAT" == "auto" ]]; then
   root_type=$(jq_root -r 'type')
   if [[ "$root_type" == "array" ]]; then
@@ -166,14 +177,19 @@ if [[ "$FORMAT" == "auto" ]]; then
   elif [[ "$root_type" == "object" && "$(jq_root -r '.transactions | type // "none"' 2>/dev/null || true)" == "array" ]]; then
     FORMAT="tx-builder"
   elif [[ "$root_type" == "object" && -n "$(jget '.to')" ]]; then
-    FORMAT="safe-tx"
+    if binds_safe_tx; then FORMAT="safe-tx"; else FORMAT="call"; fi
   else
-    die "cannot detect input format; pass --format safe-tx|tx-builder|tx-array"
+    die "cannot detect input format; pass --format safe-tx|call|tx-builder|tx-array"
   fi
 fi
 
-case "$FORMAT" in safe-tx|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
+case "$FORMAT" in safe-tx|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
+
+if [[ "$FORMAT" == "call" ]]; then
+  [[ "$(jq_root -r 'type')" == "object" && -n "$(jget '.to')" ]] || die "call must be an object with 'to'"
+  ! binds_safe_tx || die "call carries SafeTx fields; a SafeTx must be complete and use the 'safe-tx' format"
+fi
 
 # --- gather the Safe-level binding (identical for every format) ---------------
 # A Transaction Builder file can name the Safe it was built for; the schema slot
@@ -216,6 +232,7 @@ if [[ "$FORMAT" == "safe-tx" ]]; then
 else
   txs_expr='.transactions'
   [[ "$FORMAT" == "tx-array" ]] && txs_expr='.'
+  [[ "$FORMAT" == "call" ]] && txs_expr='[.]'
 
   # Pull the inner transactions into a normalised array in one jq pass, so a
   # malformed entry fails loudly instead of half-encoding a batch.
