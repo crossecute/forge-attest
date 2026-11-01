@@ -57,11 +57,12 @@ model" sections before writing a claim.
    different transaction. Suggest committing the claim and running it in CI with
    the forge-attest GitHub Action (see the README), pinned by commit SHA.
 
-6. **Propose, if asked.** Only when the user asks to submit it, and only after
+6. **Sign off, if asked.** Only when the user asks to submit it, and only after
    step 4 attested, give them the command to run themselves:
-   `SAFE_API_KEY=<key> ${CLAUDE_PLUGIN_ROOT}/attest.sh --config attest/<OUTPUT_NAME>.toml --propose -- <wallet flags>`,
+   `SAFE_API_KEY=<key> ${CLAUDE_PLUGIN_ROOT}/attest.sh --config attest/<OUTPUT_NAME>.toml --attest -- <wallet flags>`,
    with their signer's `cast` flags (`--ledger`, `--trezor`, `--account <name>`).
    Do not run it for them: it signs with their wallet and publishes to the Safe
    Transaction Service. It proposes the transaction, or confirms it if already
-   queued, then requires the live check. The hashes it prints before signing
-   should match the device and step 5.
+   queued, then requires the live check. For a nested claim it signs the child's
+   approval instead and needs `child_network` set. The hashes it prints before
+   signing should match the device and step 5.

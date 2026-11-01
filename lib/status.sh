@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# status.sh: the per-chain table attest.sh --propose keeps while it submits.
+# status.sh: the per-chain table attest.sh --attest keeps while it submits.
 # Sourced after common.sh. The caller fills ST_NAME, ST_SAFE, ST_NONCE, ST_HASH
 # and ST_URL (one entry per claim; ST_URL may be "") and then calls status_init.
 #

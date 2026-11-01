@@ -83,7 +83,7 @@ misunderstood prompt gets caught.
    tell them the next steps, which are theirs:
    - review and commit the script;
    - run `/attest-safe-tx` to pin the commit and hashes;
-   - propose the transaction, with `attest.sh --propose` once the claim attests
+   - propose the transaction, with `attest.sh --attest` once the claim attests
      (see attest-safe-tx step 6), their own proposal tooling, or by importing
      `out/<OUTPUT_NAME>.json` into the Safe{Wallet} Transaction Builder;
    - before signing, compare the hash on their hardware wallet with `SAFE_TX_HASH`.

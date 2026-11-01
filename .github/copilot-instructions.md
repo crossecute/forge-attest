@@ -11,7 +11,7 @@ script, folds the JSON into one canonical SafeTx (`lib/normalize.sh`), derives t
 EIP-712 `safeTxHash` with `cast` (`lib/derive.sh`) and again in Solidity
 (`test/Attest.t.sol`, `test/SafeTx.sol`), and compares it with the Safe Transaction
 Service through the vendored `lib/safe_hashes.sh`. `lib/propose.sh` signs and submits
-an attested transaction under `--propose`. `action.yml` wraps `attest.sh` as a GitHub
+an attested transaction under `--attest`. `action.yml` wraps `attest.sh` as a GitHub
 Action, and `skills/` is a Claude Code plugin.
 
 Its output is a verdict that signers and CI gates trust. The worst bug here is a run
@@ -83,10 +83,11 @@ Include it in the comment. If you could not write or run one, say so.
    `-`). jq takes values through `--arg`, never by splicing them into the filter.
    Text from the service or the producer is filtered before it is printed. Under
    `--json`, stdout carries only the verdict document.
-5. **What is signed.** Under `--propose`, the typed data comes only from the
-   attested canonical form, the signature is checked against the attested hash
-   before anything is sent, and nothing is sent unless every offline check passed
-   and, with several claims, every claim's preflight passed.
+5. **What is signed.** Under `--attest`, the typed data comes only from the
+   attested canonical form (for a nested claim, the approval built from it), the
+   signature is checked against the attested hash before anything is sent, and
+   nothing is sent unless every offline check passed and, with several claims,
+   every claim's preflight passed.
    A service response can make the run refuse but must not change what is signed.
 6. **The claim and the clone.** The claim is read one way: no headers but `[[run]]`
    and `[[run.claim]]`, no repeated or unknown keys. Paths from it stay inside the
