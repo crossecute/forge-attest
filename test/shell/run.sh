@@ -631,6 +631,11 @@ assert_contains "an unknown key is refused" "$(claim_err "$TMP/typo.toml")" \
 assert_contains "a safe_ui_prefix that is not a short name is refused" "$(claim_err "$TMP/prefix.toml")" \
   "safe_ui_prefix must be a chain short name"
 
+# Only a run with rpc_env forks at a block this tool sets.
+{ cat "$TMP/e2e.toml"; echo 'fork_block = "12"'; } >"$TMP/fork.toml"
+assert_contains "fork_block without rpc_env is refused" "$(claim_err "$TMP/fork.toml")" \
+  "fork_block needs rpc_env"
+
 # A producer that commits its output directory as a symlink to elsewhere: the
 # file there must be neither deleted nor attested.
 LINKED="$TMP/linked-producer"
@@ -1195,6 +1200,10 @@ assert_contains "…counting them" "$(jq -r '.failures[]' <<<"$deploy_out")" "si
 per_out=$(bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
 assert_eq "one run per chain is ATTESTED" "$(jq -r .attested <<<"$per_out")" "true"
 assert_eq "…recording each run's chain" "$(jq -r '[.runs[].chain_id] | join(",")' <<<"$per_out")" "10,8453"
+sed 's/^rpc_env = "RPC_A"/&\nfork_block = "0"/' "$TMP/per-chain.toml" >"$TMP/per-chain-pinned.toml"
+assert_eq "a run with fork_block forks there and records it" \
+  "$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-pinned.toml" --json 2>/dev/null | jq -r '.attested, .runs[0].block, .runs[0].fork_block' | paste -sd' ')" \
+  "true 0 0"
 per_deploy=$(DEPLOY=true bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
 assert_eq "a deploy under a run's own RPC is refused per run" \
   "$(jq -r '[.failures[] | select(test("simulates 1 transaction\\(s\\) from an EOA"))] | length' <<<"$per_deploy")" "2"

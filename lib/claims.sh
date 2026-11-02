@@ -14,7 +14,7 @@
 # way by a reviewer.
 #
 # Model: { layout: "flat"|"runs", producer: {...},
-#          runs: [{script, rpc_env, unclaimed: [...]}],
+#          runs: [{script, rpc_env, fork_block, unclaimed: [...]}],
 #          claims: [{run, output_path, <claim keys>...}] }
 # Every value is a string as written, "" when unset; unclaimed is an array.
 set -euo pipefail
@@ -27,7 +27,7 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
-RUN_KEYS=(script rpc_env unclaimed)
+RUN_KEYS=(script rpc_env fork_block unclaimed)
 CLAIM_KEYS=(output_path input_format batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
   child_safe child_nonce child_network expected_child_safe_tx_hash
@@ -99,21 +99,28 @@ rel_path() {
     || die "config: $1 must be relative to the producer repo, without '..': $2"
 }
 
-# unclaimed_json <file>: a one-line array of plain strings
-unclaimed_json() {
-  local raw p
-  raw=$(toml_get "$1" unclaimed)
+# array_json <file> <key>: a one-line array of plain strings
+array_json() {
+  local raw
+  raw=$(toml_get "$1" "$2")
   [[ -n "$raw" ]] || { echo '[]'; return; }
   jq -ce 'if type == "array" and all(.[]; type == "string") then . else error end' \
-    <<<"$raw" 2>/dev/null || die "config: unclaimed must be a one-line array of strings: $raw"
-  while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$raw")
+    <<<"$raw" 2>/dev/null || die "config: $2 must be a one-line array of strings: $raw"
+}
+
+# run_json <file> <script>: one run of the model
+run_json() {
+  local u p
+  u=$(array_json "$1" unclaimed)
+  while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
+  section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson u "$u" \
+    '{script: $script} + . + {unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
-  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env unclaimed "${CLAIM_KEYS[@]}"
+  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block unclaimed "${CLAIM_KEYS[@]}"
   producer=$(section_json "$TMP/top" "${PRODUCER_KEYS[@]}")
-  run=$(section_json "$TMP/top" rpc_env | jq --arg s "$(toml_get "$TMP/top" producer_script)" \
-    --argjson u "$(unclaimed_json "$TMP/top")" '{script: $s} + . + {unclaimed: $u}')
+  run=$(run_json "$TMP/top" "$(toml_get "$TMP/top" producer_script)")
   runs_json=$(jq -n --argjson r "$run" '[$r]')
   claims_json=$(section_json "$TMP/top" "${CLAIM_KEYS[@]}" | jq -c '[{run: 0} + .]')
 else
@@ -122,7 +129,7 @@ else
   runs_json='[]' claims_json='[]'
   for (( r = 1; r <= runs; r++ )); do
     check_section "$TMP/r$r" "[[run]] $r" "${RUN_KEYS[@]}"
-    run=$(section_json "$TMP/r$r" script rpc_env | jq --argjson u "$(unclaimed_json "$TMP/r$r")" '. + {unclaimed: $u}')
+    run=$(run_json "$TMP/r$r" "$(toml_get "$TMP/r$r" script)")
     runs_json=$(jq -c --argjson r "$run" '. + [$r]' <<<"$runs_json")
     c=1
     [[ -f "$TMP/r${r}c1" ]] || die "config: [[run]] $r has no [[run.claim]]"
@@ -144,11 +151,15 @@ pv() { jq -r --arg k "$1" '.[$k]' <<<"$producer"; }
 
 # Fields are split on \x1f, not tab: read merges runs of a whitespace IFS, so an
 # empty field would shift the ones after it.
-while IFS=$'\x1f' read -r script rpc_env; do
+# Only a run given rpc_env forks at a block this tool sets.
+while IFS=$'\x1f' read -r script rpc_env fork_block; do
   [[ -n "$script" ]] || die "config: every run needs a script (producer_script in a flat claim)"
   [[ -z "$rpc_env" || "$rpc_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
     || die "config: rpc_env must name an environment variable: $rpc_env"
-done < <(jq -r '.[] | [.script, .rpc_env] | join("\u001f")' <<<"$runs_json")
+  [[ -z "$fork_block" || "$fork_block" =~ ^(0|[1-9][0-9]{0,15})$ ]] \
+    || die "config: fork_block must be a decimal block number: $fork_block"
+  [[ -z "$fork_block" || -n "$rpc_env" ]] || die "config: fork_block needs rpc_env, the chain it forks"
+done < <(jq -r '.[] | [.script, .rpc_env, .fork_block] | join("\u001f")' <<<"$runs_json")
 
 # safe_ui_prefix and safe_tx_service_url end up in links and requests, and on a
 # fork PR the config is the attacker's.

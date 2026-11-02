@@ -243,22 +243,28 @@ for k in "${!forge_dirs[@]}"; do
 done
 broadcast_dir="${forge_dirs[2]:-broadcast}"
 
-RUN_CHAIN=() RUN_BLOCK=()
+RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=()
 for (( r = 0; r < n_runs; r++ )); do
   script=$(run_cfg "$r" script)
   rpc_env=$(run_cfg "$r" rpc_env)
+  fork_block=$(run_cfg "$r" fork_block)
   label="the script"
   (( n_runs > 1 )) && { label="run $((r + 1)) ($script)"; printf '    run %d   : %s\n' "$((r + 1))" "$script"; }
   args=()
-  RUN_CHAIN[r]="" RUN_BLOCK[r]=""
+  RUN_CHAIN[r]="" RUN_BLOCK[r]="" RUN_PINNED[r]=""
   if [[ -n "$rpc_env" ]]; then
     url="${!rpc_env:-}"
     [[ -n "$url" ]] || die "rpc_env names $rpc_env, which is not set"
     RUN_CHAIN[r]=$(cast chain-id --rpc-url "$url") || die "could not read the chain id from \$$rpc_env"
-    RUN_BLOCK[r]=$(cast block-number --rpc-url "$url" 2>/dev/null || true)
-    # The URL is not printed: it often carries an API key.
-    printf '    rpc      : $%s (chain %s, block %s)\n' "$rpc_env" "${RUN_CHAIN[r]}" "${RUN_BLOCK[r]:-?}"
     args=(--rpc-url "$url")
+    if [[ -n "$fork_block" ]]; then
+      RUN_BLOCK[r]="$fork_block" RUN_PINNED[r]=" pinned"
+      args+=(--fork-block-number "$fork_block")
+    else
+      RUN_BLOCK[r]=$(cast block-number --rpc-url "$url" 2>/dev/null || true)
+    fi
+    # The URL is not printed: it often carries an API key.
+    printf '    rpc      : $%s (chain %s, block %s%s)\n' "$rpc_env" "${RUN_CHAIN[r]}" "${RUN_BLOCK[r]:-?}" "${RUN_PINNED[r]}"
   fi
   mapfile -t run_claims < <(claims_of_run "$r")
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
@@ -826,9 +832,10 @@ claim_json() { # <claim index>
 for (( i = 0; i < n_claims; i++ )); do claim_json "$i"; done >"$WORK/claims.json"
 for (( r = 0; r < n_runs; r++ )); do
   jq -n --arg script "$(run_cfg "$r" script)" --arg rpc_env "$(run_cfg "$r" rpc_env)" \
-    --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" \
+    --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" --arg fork_block "$(run_cfg "$r" fork_block)" \
     --argjson written "$(jq -cRn '[inputs | select(. != "")]' <"$WORK/outputs.$r" 2>/dev/null || echo '[]')" \
-    '{script: $script, rpc_env: $rpc_env, chain_id: $chain_id, block: $block, written: $written}'
+    '{script: $script, rpc_env: $rpc_env, chain_id: $chain_id, block: $block, fork_block: $fork_block,
+      written: $written}'
 done >"$WORK/runs.json"
 
 jq -n \

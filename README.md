@@ -107,7 +107,8 @@ producer](#several-transactions-from-one-producer)) gets a different document:
   "layout": "runs",
   "producer": { "repo": "…", "commit": "…" },
   "toolchain": { … },
-  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…", "written": ["txs/Upgrade-8453.json"] } ],
+  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…",
+              "fork_block": "", "written": ["txs/Upgrade-8453.json"] } ],
   "claims": [ { "output_path": "txs/Upgrade-8453.json", "run": 0, "attested": true,
                 "safe": { … }, "chain_id": "8453", "live": true, "hashes": { … },
                 "nested": null, "proposal": null, "url": "https://app.safe.global/…", "failures": [] } ],
@@ -478,7 +479,7 @@ expected_safe_tx_hash     = "0x<safeTxHash>"
 ```
 
 A claim takes the same keys as a flat claim, plus `live`, `safe_ui_prefix` and
-`safe_tx_service_url`. A run takes `script`, `rpc_env` and `unclaimed`.
+`safe_tx_service_url`. A run takes `script`, `rpc_env`, `fork_block` and `unclaimed`.
 [`attest.runs.example.toml`](attest.runs.example.toml) is a commented example of
 both kinds of run.
 
@@ -489,8 +490,9 @@ What changes with several claims:
   run wrote.
 - A run with `rpc_env` reads its chain id from that RPC, and every claim in it
   must be a transaction for that chain. The verdict records the chain and the
-  block number at the time of the run. A run without one may fork chains itself;
-  it then reads whatever RPCs the producer names, at their latest block.
+  block number at the time of the run, or `fork_block` when that is pinned. A run
+  without one may fork chains itself; it then reads whatever RPCs the producer
+  names, at their latest block.
 - Two claims for the same Safe, chain and nonce fail, since only one can execute.
 - `live = false` marks a claim whose chain has no Transaction Service in the
   table. Its live check is skipped as a reviewed exception, also under
@@ -500,7 +502,8 @@ What changes with several claims:
 A producer whose output depends on chain state reproduces only while that state
 holds. A claim for an upgrade that checks its own preconditions, for example,
 stops reproducing once the upgrade executes. Keep the `--json` verdict from before
-execution as the record.
+execution as the record, or pin `fork_block` so the run always reads the same
+state.
 
 ## Building transactions from a prompt
 
