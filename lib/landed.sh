@@ -6,8 +6,9 @@
 # Usage:  ETH_RPC_URL=<url> landed.sh <txs.json> <fork block>
 #
 # <txs.json> is the array attest.sh reads from forge's dry-run records:
-# [{from, nonce, to, input, value, contract, created: [...]}], hex as forge writes
-# it. Prints one JSON object per transaction, with the nonce in decimal, adding
+# [{from, nonce, to, input, value, contract, created: [...]}], the nonce in
+# decimal and the rest hex as forge writes it. Prints one JSON object per
+# transaction, adding
 #   state:  landed | pending | differs | failed | unknown
 #   block, tx_hash, detail
 #
@@ -35,15 +36,15 @@ code_at() { rpc eth_getCode "$1" "$(hex "$2")" | jq -r .; }
 
 latest=$(dec "$(rpc eth_blockNumber)") || die "could not read the latest block"
 
-# The nonce is written back in decimal, as reports print it.
 emit() { # <tx> <state> <block> <hash> <detail>
-  jq -c --arg n "$nonce" --arg s "$2" --arg b "$3" --arg h "$4" --arg d "$5" \
-    '. + {nonce: $n, state: $s, block: $b, tx_hash: $h, detail: $d}' <<<"$1"
+  jq -c --arg s "$2" --arg b "$3" --arg h "$4" --arg d "$5" \
+    '. + {state: $s, block: $b, tx_hash: $h, detail: $d}' <<<"$1"
 }
 
 while IFS= read -r tx; do
   from=$(jq -r .from <<<"$tx")
-  nonce=$(dec "$(jq -r .nonce <<<"$tx")") || die "not a nonce in the record: $(jq -r .nonce <<<"$tx" | printable)"
+  nonce=$(jq -r .nonce <<<"$tx")
+  [[ "$nonce" =~ ^[0-9]{1,15}$ ]] || die "not a nonce in the record: $(printf '%s' "$nonce" | printable)"
   live=$(nonce_at "$from" latest) || { emit "$tx" unknown "" "" "could not read the sender's nonce"; continue; }
   if (( live <= nonce )); then
     emit "$tx" pending "" "" "sender's nonce is $live"

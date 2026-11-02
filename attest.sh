@@ -249,7 +249,8 @@ done
 broadcast_dir="${forge_dirs[2]:-broadcast}"
 
 # eoa_txs <written list>: the transactions forge's dry-run records hold for this
-# run, one per chain, sender and nonce. Forge writes each record twice, as -latest
+# run, one per chain, sender and nonce, with the nonce in decimal so every report
+# prints it the same way. Forge writes each record twice, as -latest
 # and under a timestamp, so the copies collapse on that key. A CREATE2 goes
 # through a factory call, so its address is checked like any contract a call
 # creates, not against the receipt.
@@ -266,7 +267,7 @@ eoa_txs() {
     [.[] | .. | objects | select(has("transactions")) | (.chain // null) as $c
       | .transactions | arrays | .[] | objects | (.transaction // {}) as $t
       | { chain: ($c // $t.chainId | num | tostring), from: (($t.from // "") | ascii_downcase),
-          nonce: (($t.nonce // "") | tostring), to: $t.to, input: ($t.input // $t.data // "0x"),
+          nonce: ($t.nonce // "" | num | tostring), to: $t.to, input: ($t.input // $t.data // "0x"),
           value: ($t.value // "0x0"),
           contract: (if .transactionType == "CREATE" then .contractAddress else null end),
           created: ([.additionalContracts[]?.address]
