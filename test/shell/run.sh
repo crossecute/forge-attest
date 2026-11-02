@@ -631,10 +631,17 @@ assert_contains "an unknown key is refused" "$(claim_err "$TMP/typo.toml")" \
 assert_contains "a safe_ui_prefix that is not a short name is refused" "$(claim_err "$TMP/prefix.toml")" \
   "safe_ui_prefix must be a chain short name"
 
-# Only a run with rpc_env forks at a block this tool sets.
+# A sender's addresses follow its nonce at the fork, so senders mean nothing
+# without a fixed block, and only a run with rpc_env forks at one.
+{ cat "$TMP/e2e.toml"; echo 'senders = ["0x000000000000000000000000000000000000dEaD"]'; } >"$TMP/senders.toml"
+assert_contains "senders without fork_block are refused" "$(claim_err "$TMP/senders.toml")" \
+  "senders needs fork_block"
 { cat "$TMP/e2e.toml"; echo 'fork_block = "12"'; } >"$TMP/fork.toml"
 assert_contains "fork_block without rpc_env is refused" "$(claim_err "$TMP/fork.toml")" \
   "fork_block needs rpc_env"
+{ cat "$TMP/e2e.toml"; printf 'rpc_env = "X"\nfork_block = "12"\nsenders = ["0xdead"]\n'; } >"$TMP/sender-bad.toml"
+assert_contains "a sender that is not an address is refused" "$(claim_err "$TMP/sender-bad.toml")" \
+  "senders must be addresses: 0xdead"
 
 # A producer that commits its output directory as a symlink to elsewhere: the
 # file there must be neither deleted nor attested.
@@ -1067,6 +1074,7 @@ export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B"
 # Multi forks both chains in one run, the way FraxFinance's V110 upgrade does;
 # PerChain builds for whichever chain --rpc-url names; Twin writes two outputs
 # for one chain. DEPLOY=true makes Multi simulate a deploy from an EOA first.
+# Deploy builds a Safe tx that calls the contract it deploys from --sender.
 MULTI="$TMP/multi-producer"
 mkdir -p "$MULTI/script"
 cp "$PRODUCER/foundry.toml" "$MULTI/"
@@ -1077,10 +1085,12 @@ pragma solidity 0.8.28;
 interface Vm {
     function createSelectFork(string calldata url) external returns (uint256);
     function startBroadcast(uint256 pk) external;
+    function startBroadcast() external;
     function stopBroadcast() external;
     function envString(string calldata name) external view returns (string memory);
     function envOr(string calldata name, bool defaultValue) external view returns (bool);
     function toString(uint256 value) external pure returns (string memory);
+    function toString(address value) external pure returns (string memory);
     function projectRoot() external view returns (string memory);
     function writeFile(string calldata path, string calldata data) external;
 }
@@ -1129,6 +1139,19 @@ contract PerChain is Base {
 
 contract Twin is Base {
     function run() external { write("a"); write("b"); }
+}
+
+contract Deploy is Base {
+    function run() external {
+        vm.startBroadcast();
+        address impl = address(new Impl());
+        vm.stopBroadcast();
+        vm.writeFile(
+            string.concat(vm.projectRoot(), "/out/deploy-", vm.toString(block.chainid), ".json"),
+            string.concat('{"version":"1.0","chainId":', vm.toString(block.chainid),
+                ',"transactions":[{"to":"', vm.toString(impl), '","value":"0","data":"0x","operation":"0"}]}\n')
+        );
+    }
 }
 EOF
 printf 'out/\nforge-out/\ncache/\nbroadcast/\n' >"$MULTI/.gitignore"
@@ -1214,6 +1237,77 @@ assert_contains "a claim another run wrote is NOT ATTESTED" "$(jq -r '.failures[
 sed 's/^rpc_env = "RPC_A"/rpc_env = "FORGE_ATTEST_TEST_UNSET"/' "$TMP/per-chain.toml" >"$TMP/per-chain-unset.toml"
 assert_contains "an rpc_env that is not set is refused" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-unset.toml" 2>&1)" "FORGE_ATTEST_TEST_UNSET, which is not set"
+
+group "attest.sh: a deploy from pinned senders"
+
+# Anvil's first account deploys, as a Ledger would: the run only names it.
+DEPLOYER=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+DEPLOYER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+cast send --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_A" 0x000000000000000000000000000000000000dEaD >/dev/null
+BLOCK_A=$(cast block-number --rpc-url "$RPC_A")
+deploy_pin() { # <rpc> <block> -> "<canonical sha256> <safeTxHash> <deployed address>"
+  (cd "$MULTI" && forge script script/Multi.s.sol:Deploy --rpc-url "$1" --fork-block-number "$2" \
+    --sender "$DEPLOYER" >/dev/null 2>&1)
+  local f
+  f=$(ls "$MULTI"/out/deploy-*.json | head -1)
+  printf '%s %s' "$(pin "$f" 7)" "$(jq -r '.transactions[0].to' "$f")"
+  rm -f "$MULTI"/out/deploy-*.json
+}
+read -r SHA_D HASH_D IMPL_D <<<"$(deploy_pin "$RPC_A" "$BLOCK_A")"
+assert_eq "the simulated deploy uses the sender's nonce at the pinned block" "${IMPL_D,,}" \
+  "$(cast compute-address "$DEPLOYER" --nonce 1 | awk '{print tolower($NF)}')"
+deploy_toml() { # <rpc_env> <block> <chain id> <sender> [run keys...]
+  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n\n[[run]]\nscript = "script/Multi.s.sol:Deploy"\n' \
+    "$MULTI" "$MULTI_COMMIT"
+  printf 'rpc_env = "%s"\nfork_block = "%s"\nsenders = ["%s"]\n' "$1" "$2" "$4"
+  printf '%s\n' "${@:5}"
+  printf '\n[[run.claim]]\noutput_path = "out/deploy-%s.json"\nsafe_address = "%s"\nsafe_nonce = "7"\nlive = false\n' "$3" "$SAFE"
+  printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' "$SHA_D" "$HASH_D"
+}
+deploy_toml RPC_A "$BLOCK_A" 10 "$DEPLOYER" >"$TMP/deploy.toml"
+
+pending_out=$(bash "$ROOT/attest.sh" --config "$TMP/deploy.toml" --json 2>"$TMP/pending.err")
+assert_eq "a deploy from a pinned sender is ATTESTED before it lands" "$(jq -r .attested <<<"$pending_out")" "true"
+assert_eq "…recording it as pending" \
+  "$(jq -r '.runs[0].sender_transactions | map("\(.from) \(.nonce) \(.state)") | join(",")' <<<"$pending_out")" \
+  "${DEPLOYER,,} 1 pending"
+assert_contains "…with a warning" "$(cat "$TMP/pending.err")" "nonce 1 from ${DEPLOYER,,} has not landed"
+pending_req=$(bash "$ROOT/attest.sh" --config "$TMP/deploy.toml" --json --require-live 2>/dev/null)
+assert_contains "…and NOT ATTESTED when the live checks are required" "$(jq -r '.failures[]' <<<"$pending_req")" \
+  "nonce 1 from ${DEPLOYER,,} has not landed"
+
+sed -e '/^fork_block/d' -e '/^senders/d' "$TMP/deploy.toml" >"$TMP/deploy-unpinned.toml"
+assert_contains "the same deploy unpinned is NOT ATTESTED" \
+  "$(bash "$ROOT/attest.sh" --config "$TMP/deploy-unpinned.toml" --json 2>/dev/null | jq -r '.failures[]')" \
+  "simulates 1 transaction(s) from an EOA: Safe calldata may depend on them; pin fork_block and senders"
+{ multi_head PerChain 'rpc_env = "RPC_A"' "fork_block = \"$BLOCK_A\"" \
+    'senders = ["0x000000000000000000000000000000000000dEaD"]'; claim10 'live = false'; } >"$TMP/other-sender.toml"
+assert_contains "a transaction from a sender not pinned is NOT ATTESTED" \
+  "$(DEPLOY=true bash "$ROOT/attest.sh" --config "$TMP/other-sender.toml" --json 2>/dev/null | jq -r '.failures[]')" \
+  "simulates a transaction from ${DEPLOYER,,}, which is not in senders"
+
+# The deploy lands later, after other blocks, from the same script: the claim
+# still re-derives at the pinned block and now finds it on chain.
+cast send --private-key "$OTHER_PK" --rpc-url "$RPC_A" 0x000000000000000000000000000000000000dEaD >/dev/null
+(cd "$MULTI" && forge script script/Multi.s.sol:Deploy --rpc-url "$RPC_A" --private-key "$DEPLOYER_KEY" \
+  --broadcast >/dev/null 2>&1 && rm -f out/deploy-*.json)
+cast send --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_A" 0x000000000000000000000000000000000000dEaD >/dev/null
+landed_out=$(bash "$ROOT/attest.sh" --config "$TMP/deploy.toml" --json --require-live 2>/dev/null)
+assert_eq "once the deploy lands as simulated it is ATTESTED under --require-live" \
+  "$(jq -r .attested <<<"$landed_out")" "true"
+assert_eq "…recording where it landed" \
+  "$(jq -r '.runs[0].sender_transactions[0] | "\(.state) \(.contract)"' <<<"$landed_out")" "landed ${IMPL_D,,}"
+
+# On the other chain the deployer spends the pinned nonce on something else
+# first, so the address the Safe tx calls never gets the contract.
+BLOCK_B=$(cast block-number --rpc-url "$RPC_B")
+read -r SHA_D HASH_D _ <<<"$(deploy_pin "$RPC_B" "$BLOCK_B")"
+deploy_toml RPC_B "$BLOCK_B" 8453 "$DEPLOYER" >"$TMP/deploy-b.toml"
+cast send --private-key "$DEPLOYER_KEY" --rpc-url "$RPC_B" 0x000000000000000000000000000000000000dEaD >/dev/null
+stray_out=$(bash "$ROOT/attest.sh" --config "$TMP/deploy-b.toml" --json 2>/dev/null)
+assert_eq "a sender that spent the pinned nonce on another tx is NOT ATTESTED" "$(jq -r .attested <<<"$stray_out")" "false"
+assert_contains "…even without --require-live" "$(jq -r '.failures[]' <<<"$stray_out")" \
+  "nonce 0 from ${DEPLOYER,,} does not match the simulation: the transaction at this nonce has a different to, input"
 
 # Only one transaction executes at a Safe's nonce.
 { multi_head Twin

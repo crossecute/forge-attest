@@ -14,9 +14,10 @@
 # way by a reviewer.
 #
 # Model: { layout: "flat"|"runs", producer: {...},
-#          runs: [{script, rpc_env, fork_block, unclaimed: [...]}],
+#          runs: [{script, rpc_env, fork_block, senders: [...], unclaimed: [...]}],
 #          claims: [{run, output_path, <claim keys>...}] }
-# Every value is a string as written, "" when unset; unclaimed is an array.
+# Every value is a string as written, "" when unset; senders and unclaimed are
+# arrays.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +28,7 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
-RUN_KEYS=(script rpc_env fork_block unclaimed)
+RUN_KEYS=(script rpc_env fork_block senders unclaimed)
 CLAIM_KEYS=(output_path input_format batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
   child_safe child_nonce child_network expected_child_safe_tx_hash
@@ -110,15 +111,16 @@ array_json() {
 
 # run_json <file> <script>: one run of the model
 run_json() {
-  local u p
+  local u s p
   u=$(array_json "$1" unclaimed)
   while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
-  section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson u "$u" \
-    '{script: $script} + . + {unclaimed: $u}'
+  s=$(array_json "$1" senders)
+  section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
+    '{script: $script} + . + {senders: $s, unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
-  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block unclaimed "${CLAIM_KEYS[@]}"
+  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block senders unclaimed "${CLAIM_KEYS[@]}"
   producer=$(section_json "$TMP/top" "${PRODUCER_KEYS[@]}")
   run=$(run_json "$TMP/top" "$(toml_get "$TMP/top" producer_script)")
   runs_json=$(jq -n --argjson r "$run" '[$r]')
@@ -151,15 +153,20 @@ pv() { jq -r --arg k "$1" '.[$k]' <<<"$producer"; }
 
 # Fields are split on \x1f, not tab: read merges runs of a whitespace IFS, so an
 # empty field would shift the ones after it.
-# Only a run given rpc_env forks at a block this tool sets.
-while IFS=$'\x1f' read -r script rpc_env fork_block; do
+# A sender's transactions are only re-derivable from a fixed block, since the
+# addresses they create follow its nonce there; and only a run given rpc_env
+# forks at a block this tool sets.
+while IFS=$'\x1f' read -r script rpc_env fork_block senders bad_sender; do
   [[ -n "$script" ]] || die "config: every run needs a script (producer_script in a flat claim)"
   [[ -z "$rpc_env" || "$rpc_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
     || die "config: rpc_env must name an environment variable: $rpc_env"
   [[ -z "$fork_block" || "$fork_block" =~ ^(0|[1-9][0-9]{0,15})$ ]] \
     || die "config: fork_block must be a decimal block number: $fork_block"
   [[ -z "$fork_block" || -n "$rpc_env" ]] || die "config: fork_block needs rpc_env, the chain it forks"
-done < <(jq -r '.[] | [.script, .rpc_env, .fork_block] | join("\u001f")' <<<"$runs_json")
+  [[ "$senders" == 0 || -n "$fork_block" ]] || die "config: senders needs fork_block"
+  [[ -z "$bad_sender" ]] || die "config: senders must be addresses: $bad_sender"
+done < <(jq -r '.[] | [.script, .rpc_env, .fork_block, (.senders | length),
+    (first(.senders[] | select(test("^0x[0-9a-fA-F]{40}$") | not)) // "")] | join("\u001f")' <<<"$runs_json")
 
 # safe_ui_prefix and safe_tx_service_url end up in links and requests, and on a
 # fork PR the config is the attacker's.
