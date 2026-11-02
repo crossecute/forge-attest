@@ -440,6 +440,57 @@ contract SafeTxHashTest {
         require(t.operation == 1 && t.to == address(0xdEaD) && t.data.length == 0, "delegatecall");
     }
 
+    function test_RejectsInvalidOperationsAcrossFormats() external {
+        uint256[3] memory invalid = [uint256(2), 256, type(uint256).max];
+        for (uint256 i = 0; i < invalid.length; i++) {
+            for (uint256 quoted = 0; quoted < 2; quoted++) {
+                string[4] memory formats = _operationFormats(invalid[i], quoted == 1);
+                for (uint256 j = 0; j < formats.length; j++) {
+                    SafeTxLib.Binding memory b = _binding();
+                    b.chainId = 1;
+                    (bool ok, bytes memory err) =
+                        address(this).call(abi.encodeCall(this.readAnyExternal, (formats[j], b)));
+                    require(!ok, "accepted invalid operation");
+                    require(_contains(err, "operation must be 0 or 1"), "wrong revert");
+                }
+            }
+        }
+    }
+
+    function test_ValidOperationsAgreeAcrossFormats() external view {
+        SafeTxLib.Binding memory b = _binding();
+        b.chainId = 1;
+        for (uint256 operation = 0; operation < 2; operation++) {
+            string[4] memory numeric = _operationFormats(operation, false);
+            bytes32 expected = SafeTxLib.readAny(numeric[0], b).hash();
+            for (uint256 quoted = 0; quoted < 2; quoted++) {
+                string[4] memory formats = _operationFormats(operation, quoted == 1);
+                for (uint256 j = 0; j < formats.length; j++) {
+                    SafeTxLib.SafeTx memory t = SafeTxLib.readAny(formats[j], b);
+                    require(t.operation == operation, "operation changed");
+                    _assertEq(t.hash(), expected, "operation across formats");
+                }
+            }
+        }
+    }
+
+    function _operationFormats(uint256 operation, bool quoted) private pure returns (string[4] memory formats) {
+        string memory value = vm.toString(operation);
+        if (quoted) value = string.concat('"', value, '"');
+        string memory fields = string.concat(
+            '"to":"0x000000000000000000000000000000000000dEaD","operation":', value
+        );
+        formats[0] = string.concat('{', fields, '}');
+        formats[1] = string.concat('[', formats[0], ']');
+        formats[2] = string.concat('{"transactions":', formats[1], '}');
+        formats[3] = string.concat(
+            '{', fields, ',"safe":"', vm.toString(SAFE),
+            '","chainId":1,"nonce":42,"value":0,"safeTxGas":0,"baseGas":0,"gasPrice":0,',
+            '"gasToken":"0x0000000000000000000000000000000000000000",',
+            '"refundReceiver":"0x0000000000000000000000000000000000000000"}'
+        );
+    }
+
     /// An object with any SafeTx field is a SafeTx, and a partial one is refused
     /// rather than completed from the binding.
     function test_PartialSafeTxIsNotCompletedFromConfig() external {
