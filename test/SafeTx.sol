@@ -271,7 +271,7 @@ library SafeTxLib {
         t.to = vm.parseJsonAddress(json, ".to");
         t.value = vm.parseJsonUint(json, ".value");
         t.data = _optionalBytes(json, ".data");
-        t.operation = uint8(vm.parseJsonUint(json, ".operation"));
+        t.operation = _readOperation(json, ".operation");
         t.safeTxGas = vm.parseJsonUint(json, ".safeTxGas");
         t.baseGas = vm.parseJsonUint(json, ".baseGas");
         t.gasPrice = vm.parseJsonUint(json, ".gasPrice");
@@ -381,9 +381,16 @@ library SafeTxLib {
                 : 0,
             data: _optionalBytes(json, string.concat(at, ".data")),
             operation: vm.keyExistsJson(json, string.concat(at, ".operation"))
-                ? uint8(vm.parseJsonUint(json, string.concat(at, ".operation")))
+                ? _readOperation(json, string.concat(at, ".operation"))
                 : 0
         });
+    }
+
+    function _readOperation(string memory json, string memory key) private view returns (uint8) {
+        uint256 operation = vm.parseJsonUint(json, key);
+        require(operation <= 1, "SafeTxLib: operation must be 0 or 1");
+        // forge-lint: disable-next-line(unsafe-typecast) bounded to 0 or 1 above
+        return uint8(operation);
     }
 
     /// @dev `data` is routinely absent or explicitly `null` for plain value
