@@ -335,10 +335,11 @@ for (( r = 0; r < n_runs; r++ )); do
     while IFS= read -r chain; do
       bad=1; record_fail "$label simulates a transaction on chain $chain, not on its pinned fork of chain ${RUN_CHAIN[r]}"
     done < <(jq -r --arg c "${RUN_CHAIN[r]}" '[.[].chain] | unique[] | select(. != $c)' "$WORK/eoa.$r.json")
-    # forge 1.8.1 on chain ids 10 and 8453 runs a salted `new` from a sender as a
-    # CREATE2 from the sender itself, but records and broadcasts a plain CREATE,
-    # so the script sees an address the deploy never fills. Every contract a
-    # sender creates in the script's own trace must be one the record predicts.
+    # forge on chain id 10 (1.8.1 and 1.8.7) and 8453 (1.8.1) runs a salted `new`
+    # from a sender as a CREATE2 from the sender itself, but records and
+    # broadcasts a plain CREATE, so the script sees an address the deploy never
+    # fills. Every contract a sender creates in the script's own trace must be one
+    # the record predicts.
     # A trace that cannot be found fails, so a change in forge's JSON cannot pass.
     if ! unpredicted=$(jq -rs --slurpfile txs "$WORK/eoa.$r.json" '
         ([$txs[0][] | (.contract // empty), .created[]] | map(ascii_downcase)) as $want

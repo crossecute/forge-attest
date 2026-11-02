@@ -1323,7 +1323,7 @@ assert_eq "…found by the code it created" \
   "$(jq -r '.runs[0].sender_transactions[0] | "\(.state) \(.contract) \(.created | map(ascii_downcase) | join(","))"' <<<"$CREATE2_OUT")" \
   "landed null ${IMPL_D,,}"
 
-# forge 1.8.1 on chain id 10 runs a salted `new` as a CREATE2 from the sender
+# forge 1.8.1 and 1.8.7 on chain id 10 run a salted `new` as a CREATE2 from the sender
 # but broadcasts a plain CREATE, so the Safe tx would call an empty address.
 # Whatever forge does, that must never attest.
 create2_land "$RPC_A" RPC_A 10

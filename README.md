@@ -544,10 +544,10 @@ transaction at that nonce on chain (through `rpc_env`) and checks it has the sam
 - A different transaction at that nonce, a revert, or a contract missing from the
   predicted address fails the run, with or without `--require-live`.
 - A contract a sender creates in the script's own trace must be one forge's
-  record predicts, or the run fails. Forge 1.8.1 breaks this on chain ids 10 and
-  8453: a salted `new` runs in the script as a CREATE2 from the sender, but is
-  recorded and broadcast as a plain CREATE that deploys elsewhere. On those chains,
-  deploy through a factory call instead.
+  record predicts, or the run fails. Forge breaks this on chain id 10 (in 1.8.1
+  and 1.8.7) and on 8453 (in 1.8.1 only): a salted `new` runs in the script as a
+  CREATE2 from the sender, but is recorded and broadcast as a plain CREATE that
+  deploys elsewhere. On an affected chain, deploy through a factory call instead.
 - A transaction not sent yet, or one the RPC cannot find, is a warning. It fails
   under `--require-live`, and `--attest` refuses to sign until it has landed.
 - Finding a transaction reads the sender's nonce at past blocks, so the RPC must
