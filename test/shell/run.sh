@@ -1068,13 +1068,16 @@ anvil_up() { # <port> <chain id>
 }
 PORT_A=$((20000 + RANDOM % 20000))
 PORT_B=$((PORT_A + 1))
-anvil_up "$PORT_A" 10 && anvil_up "$PORT_B" 8453 || fail "anvil did not start: the multi-chain tests need it"
-export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B"
+PORT_C=$((PORT_A + 2))
+anvil_up "$PORT_A" 10 && anvil_up "$PORT_B" 8453 && anvil_up "$PORT_C" 1 \
+  || fail "anvil did not start: the multi-chain tests need it"
+export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B" RPC_C="http://127.0.0.1:$PORT_C"
 
 # Multi forks both chains in one run, the way FraxFinance's V110 upgrade does;
 # PerChain builds for whichever chain --rpc-url names; Twin writes two outputs
 # for one chain. DEPLOY=true makes Multi simulate a deploy from an EOA first.
-# Deploy builds a Safe tx that calls the contract it deploys from --sender.
+# Deploy builds a Safe tx that calls the contract it deploys from --sender,
+# through forge's CREATE2 factory when CREATE2=true.
 MULTI="$TMP/multi-producer"
 mkdir -p "$MULTI/script"
 cp "$PRODUCER/foundry.toml" "$MULTI/"
@@ -1144,7 +1147,7 @@ contract Twin is Base {
 contract Deploy is Base {
     function run() external {
         vm.startBroadcast();
-        address impl = address(new Impl());
+        address impl = vm.envOr("CREATE2", false) ? address(new Impl{salt: 0}()) : address(new Impl());
         vm.stopBroadcast();
         vm.writeFile(
             string.concat(vm.projectRoot(), "/out/deploy-", vm.toString(block.chainid), ".json"),
@@ -1297,6 +1300,39 @@ assert_eq "once the deploy lands as simulated it is ATTESTED under --require-liv
   "$(jq -r .attested <<<"$landed_out")" "true"
 assert_eq "…recording where it landed" \
   "$(jq -r '.runs[0].sender_transactions[0] | "\(.state) \(.contract)"' <<<"$landed_out")" "landed ${IMPL_D,,}"
+
+# create2_land <rpc> <rpc_env> <chain id>: pin a salted deploy, broadcast it,
+# and attest it under --require-live. Sets IMPL_D and CREATE2_OUT.
+create2_land() {
+  local block
+  block=$(cast block-number --rpc-url "$1")
+  read -r SHA_D HASH_D IMPL_D <<<"$(CREATE2=true deploy_pin "$1" "$block")"
+  deploy_toml "$2" "$block" "$3" "$DEPLOYER" >"$TMP/deploy-create2-$3.toml"
+  (cd "$MULTI" && CREATE2=true forge script script/Multi.s.sol:Deploy --rpc-url "$1" \
+    --private-key "$DEPLOYER_KEY" --broadcast >/dev/null 2>&1 && rm -f out/deploy-*.json)
+  CREATE2_OUT=$(CREATE2=true bash "$ROOT/attest.sh" --config "$TMP/deploy-create2-$3.toml" --json \
+    --require-live 2>/dev/null)
+}
+
+# Through the CREATE2 factory the contract is created by a call, so it is found
+# by its code first appearing in the block the call landed in.
+create2_land "$RPC_C" RPC_C 1
+assert_eq "a CREATE2 deploy that landed as simulated is ATTESTED under --require-live" \
+  "$(jq -r .attested <<<"$CREATE2_OUT")" "true"
+assert_eq "…found by the code it created" \
+  "$(jq -r '.runs[0].sender_transactions[0] | "\(.state) \(.contract) \(.created | map(ascii_downcase) | join(","))"' <<<"$CREATE2_OUT")" \
+  "landed null ${IMPL_D,,}"
+
+# forge 1.8.1 on chain id 10 runs a salted `new` as a CREATE2 from the sender
+# but broadcasts a plain CREATE, so the Safe tx would call an empty address.
+# Whatever forge does, that must never attest.
+create2_land "$RPC_A" RPC_A 10
+op_verdict="$(jq -r .attested <<<"$CREATE2_OUT") $([[ "$(cast code "$IMPL_D" --rpc-url "$RPC_A")" == 0x ]] && echo empty || echo code)"
+assert_ne "a Safe tx calling an address the deploy left empty is never ATTESTED" "$op_verdict" "true empty"
+if [[ "$op_verdict" == "false empty" ]]; then
+  assert_contains "…naming the address the record does not predict" "$(jq -r '.failures[]' <<<"$CREATE2_OUT")" \
+    "created ${IMPL_D,,} in the script, which forge's record does not predict"
+fi
 
 # On the other chain the deployer spends the pinned nonce on something else
 # first, so the address the Safe tx calls never gets the contract.

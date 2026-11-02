@@ -306,7 +306,7 @@ for (( r = 0; r < n_runs; r++ )); do
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
-  in_clone forge script "$script" "${args[@]}" >/dev/null 2>"$WORK/forge.err" \
+  in_clone forge script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
   snapshot "$WORK/snap.$r.after"
   written_between "$WORK/snap.$r.before" "$WORK/snap.$r.after" >"$WORK/written.$r"
@@ -335,6 +335,24 @@ for (( r = 0; r < n_runs; r++ )); do
     while IFS= read -r chain; do
       bad=1; record_fail "$label simulates a transaction on chain $chain, not on its pinned fork of chain ${RUN_CHAIN[r]}"
     done < <(jq -r --arg c "${RUN_CHAIN[r]}" '[.[].chain] | unique[] | select(. != $c)' "$WORK/eoa.$r.json")
+    # forge 1.8.1 on chain ids 10 and 8453 runs a salted `new` from a sender as a
+    # CREATE2 from the sender itself, but records and broadcasts a plain CREATE,
+    # so the script sees an address the deploy never fills. Every contract a
+    # sender creates in the script's own trace must be one the record predicts.
+    # A trace that cannot be found fails, so a change in forge's JSON cannot pass.
+    if ! unpredicted=$(jq -rs --slurpfile txs "$WORK/eoa.$r.json" '
+        ([$txs[0][] | (.contract // empty), .created[]] | map(ascii_downcase)) as $want
+        | [.[] | objects | .traces? // empty | .[] | select(.[0] == "Execution") | .[1].arena[].trace]
+        | if length == 0 then error("no execution trace") else . end
+        | [.[] | select((.kind == "CREATE" or .kind == "CREATE2") and .success
+                        and ((.caller | ascii_downcase) as $c | $ARGS.positional | index($c)))
+           | .address | ascii_downcase] | unique - $want | .[]' \
+        "$WORK/forge.$r.out" --args "${senders[@]}" 2>/dev/null); then
+      bad=1; record_fail "$label: could not read the script's trace to compare with forge's record"
+    fi
+    for a in $unpredicted; do
+      bad=1; record_fail "$label: a sender created $a in the script, which forge's record does not predict"
+    done
     (( bad )) || ok "simulates $bc_tx transaction(s) from pinned senders at block $fork_block"
   fi
 
