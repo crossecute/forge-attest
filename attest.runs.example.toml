@@ -57,3 +57,21 @@ safe_nonce   = "9"
 live         = false
 expected_canonical_sha256 = "<sha256 of the canonical form>"
 expected_safe_tx_hash     = "0x<safeTxHash>"
+
+# A script that deploys from an EOA (a Ledger, say) and then builds a Safe tx
+# that calls the new contract. fork_block and senders make the deployed address
+# re-derivable on every re-run; the deployer's real transaction at each nonce is
+# then looked up on chain and must be the one simulated.
+[[run]]
+script     = "script/DeployAndUpgrade.s.sol:DeployAndUpgrade"
+rpc_env    = "MAINNET_RPC_URL"
+fork_block = "21500000"
+senders    = ["0x<deployer address>"]
+
+[[run.claim]]
+output_path  = "txs/DeployAndUpgrade-1.json"
+safe_network = "ethereum"
+safe_address = "0x<safe on ethereum>"
+safe_nonce   = "41"
+expected_canonical_sha256 = "<sha256 of the canonical form>"
+expected_safe_tx_hash     = "0x<safeTxHash>"

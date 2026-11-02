@@ -34,9 +34,12 @@ script it runs, and the exact outputs that commit must produce. Given one,
 Before those, the run itself is checked. Every claimed file must be one the script
 wrote during this run, not a copy committed in the producer repo. Every other file
 it writes must be claimed or listed as `unclaimed`. A run that simulates
-transactions from an EOA (a deploy under `vm.startBroadcast`) is refused, because
-calldata that embeds the deployed address depends on the deployer's live nonce and
-cannot be re-derived later.
+transactions from an EOA (a deploy under `vm.startBroadcast`) is refused unless it
+pins the fork block and the senders. Without those pins the deployed address
+follows the deployer's live nonce, so Safe calldata that embeds it cannot be
+re-derived later. With them, each simulated transaction must also be the one the
+sender actually sent at that nonce (see [Deploying from an EOA
+first](#deploying-from-an-eoa-first)).
 
 If all active checks pass, the submitted Safe tx is provably the script's output. If
 anything was changed (the script, the JSON, or the queued tx) at least one hash
@@ -107,7 +110,9 @@ producer](#several-transactions-from-one-producer)) gets a different document:
   "layout": "runs",
   "producer": { "repo": "…", "commit": "…" },
   "toolchain": { … },
-  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…", "written": ["txs/Upgrade-8453.json"] } ],
+  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…",
+              "fork_block": "", "senders": [], "written": ["txs/Upgrade-8453.json"],
+              "sender_transactions": [] } ],
   "claims": [ { "output_path": "txs/Upgrade-8453.json", "run": 0, "attested": true,
                 "safe": { … }, "chain_id": "8453", "live": true, "hashes": { … },
                 "nested": null, "proposal": null, "url": "https://app.safe.global/…", "failures": [] } ],
@@ -117,7 +122,9 @@ producer](#several-transactions-from-one-producer)) gets a different document:
 
 Each claim carries its own verdict and failures. The top-level `failures` lists
 them all, each prefixed with the claim's `output_path`, plus any failure of a run
-itself.
+itself. A run's `sender_transactions` lists what it simulated from pinned senders,
+each with its `from`, `nonce`, `contract` and on-chain `state`. A flat claim's
+document gains `fork_block` and `sender_transactions` only when it has some.
 
 ### Signing off from the command line
 
@@ -478,9 +485,10 @@ expected_safe_tx_hash     = "0x<safeTxHash>"
 ```
 
 A claim takes the same keys as a flat claim, plus `live`, `safe_ui_prefix` and
-`safe_tx_service_url`. A run takes `script`, `rpc_env` and `unclaimed`.
+`safe_tx_service_url`. A run takes `script`, `rpc_env`, `fork_block`, `senders` and
+`unclaimed`.
 [`attest.runs.example.toml`](attest.runs.example.toml) is a commented example of
-both kinds of run.
+each kind of run.
 
 What changes with several claims:
 
@@ -489,8 +497,9 @@ What changes with several claims:
   run wrote.
 - A run with `rpc_env` reads its chain id from that RPC, and every claim in it
   must be a transaction for that chain. The verdict records the chain and the
-  block number at the time of the run. A run without one may fork chains itself;
-  it then reads whatever RPCs the producer names, at their latest block.
+  block number at the time of the run, or `fork_block` when that is pinned. A run
+  without one may fork chains itself; it then reads whatever RPCs the producer
+  names, at their latest block.
 - Two claims for the same Safe, chain and nonce fail, since only one can execute.
 - `live = false` marks a claim whose chain has no Transaction Service in the
   table. Its live check is skipped as a reviewed exception, also under
@@ -500,7 +509,56 @@ What changes with several claims:
 A producer whose output depends on chain state reproduces only while that state
 holds. A claim for an upgrade that checks its own preconditions, for example,
 stops reproducing once the upgrade executes. Keep the `--json` verdict from before
-execution as the record.
+execution as the record, or pin `fork_block` so the run always reads the same
+state.
+
+### Deploying from an EOA first
+
+A common script deploys a contract from a hot wallet or Ledger, then builds a Safe
+transaction that calls it. The Safe calldata then embeds an address that depends
+on the deployer's nonce. Pin the block the run forks at and the addresses it may
+send from, and the run re-derives the same address on every re-run:
+
+```toml
+[[run]]
+script     = "script/DeployAndUpgrade.s.sol:DeployAndUpgrade"
+rpc_env    = "MAINNET_RPC_URL"
+fork_block = "21500000"                # the run forks here, not at the latest block
+senders    = ["0x<deployer address>"]  # passed as --sender when there is one
+```
+
+No key is needed to attest. A simulation only needs the sender's address, so a
+Ledger deployer is pinned by its address and the device stays unplugged. The
+script must take the sender from `--sender` (a bare `vm.startBroadcast()`) or name
+it (`vm.startBroadcast(0x…)`); one that reads a private key from the environment
+cannot be re-run here. With several senders, the script must name each, since
+forge takes one `--sender`.
+
+Pinning fixes what the script produced. It does not prove the deploy landed where
+the script predicted: if the deployer sends anything else first, every address
+moves, and the Safe tx would point at the wrong place. So for each transaction the
+run simulated from a pinned sender, `attest.sh` finds the sender's real
+transaction at that nonce on chain (through `rpc_env`) and checks it has the same
+`to`, input and value, succeeded, and created the predicted contracts.
+
+- A different transaction at that nonce, a revert, or a contract missing from the
+  predicted address fails the run, with or without `--require-live`.
+- A contract a sender creates in the script's own trace must be one forge's
+  record predicts, or the run fails. Forge breaks this on chain id 10 (in 1.8.1
+  and 1.8.7) and on 8453 (in 1.8.1 only): a salted `new` runs in the script as a
+  CREATE2 from the sender, but is recorded and broadcast as a plain CREATE that
+  deploys elsewhere ([foundry-rs/foundry#18048](https://github.com/foundry-rs/foundry/issues/18048)).
+  On an affected chain, deploy through a factory call instead.
+- A transaction not sent yet, or one the RPC cannot find, is a warning. It fails
+  under `--require-live`, and `--attest` refuses to sign until it has landed.
+- Finding a transaction reads the sender's nonce at past blocks, so the RPC must
+  serve historical state from `fork_block` on (an archive node for an old block).
+
+Pin a block at or after the sender's last transaction before the deploy, and
+before the deploy itself. You can attest before deploying, then deploy with the
+same script (`forge script … --ledger --sender 0x… --broadcast`), and re-run
+with `--require-live` once it lands. A transaction the run simulates from an
+address not in `senders`, or on a chain the script forks itself, fails.
 
 ## Building transactions from a prompt
 
@@ -573,7 +631,9 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   the file is listed in `unclaimed`, so leaving one out of review is a visible
   change to the config.
 - Safe calldata that embeds an address the same run deployed from an EOA → the
-  run is refused, since the address moves with the deployer's nonce.
+  run is refused unless `fork_block` and `senders` are pinned. When they are, a
+  deployer that spent the pinned nonce on a different transaction, or a deploy
+  that reverted, fails the run.
 
 **Trusts, and why that is safe**
 - The Safe Transaction Service (check #5) is queried over the network, but a
@@ -594,6 +654,10 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   response cannot run commands or rewrite what the terminal shows.
 - The four offline checks need no network at all beyond cloning the pinned
   producer commit, whose SHA is verified after checkout.
+- A run with `rpc_env` trusts that RPC for chain state, as the producer's script
+  already does. With `senders` pinned, it is also what reports the senders'
+  transactions on chain. A lying RPC could report a deploy as landed when it has
+  not; use one you would deploy through.
 
 **Does not catch (out of scope)**
 - Whether the script's *intent* is correct. `forge-attest` proves provenance, not
@@ -678,6 +742,7 @@ forge-attest/
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
 │   ├── claims.sh                 # reads attest.toml into one model, refusing ambiguous TOML
+│   ├── landed.sh                 # finds a pinned sender's transactions on chain
 │   ├── propose.sh                # signs and submits an attested tx (--attest)
 │   ├── status.sh                 # the per-chain table --attest keeps
 │   ├── summary.sh                # renders the verdict as the action's job summary

@@ -15,6 +15,11 @@
 #    6. optionally checks that same hash against what is actually
 #       queued in the Safe, via the Safe Transaction Service.         (live integrity)
 #
+#  A run that broadcasts from an EOA (a deploy, say) attests only with fork_block
+#  and senders pinned. Each transaction it simulated from them is then looked up
+#  on chain at its nonce and must be the one the sender sent.
+#  (lib/landed.sh)
+#
 #  A flat attest.toml is one claim. One with [[run]] tables holds several runs
 #  of the producer, each with a [[run.claim]] per output file (lib/claims.sh).
 #
@@ -243,28 +248,65 @@ for k in "${!forge_dirs[@]}"; do
 done
 broadcast_dir="${forge_dirs[2]:-broadcast}"
 
-RUN_CHAIN=() RUN_BLOCK=()
+# eoa_txs <written list>: the transactions forge's dry-run records hold for this
+# run, one per chain, sender and nonce, with the nonce in decimal so every report
+# prints it the same way. Forge writes each record twice, as -latest
+# and under a timestamp, so the copies collapse on that key. A CREATE2 goes
+# through a factory call, so its address is checked like any contract a call
+# creates, not against the receipt.
+eoa_txs() {
+  local f files=()
+  while IFS= read -r f; do
+    [[ "$f" == "$broadcast_dir/"*.json ]] && files+=("$WORK/repo/$f")
+  done <"$1"
+  (( ${#files[@]} )) || { echo '[]'; return; }
+  jq -cs 'def num: if type == "string" and startswith("0x")
+        then ltrimstr("0x") | ascii_downcase | explode
+          | reduce .[] as $d (0; . * 16 + (if $d >= 97 then $d - 87 else $d - 48 end))
+        else . end;
+    [.[] | .. | objects | select(has("transactions")) | (.chain // null) as $c
+      | .transactions | arrays | .[] | objects | (.transaction // {}) as $t
+      | { chain: ($c // $t.chainId | num | tostring), from: (($t.from // "") | ascii_downcase),
+          nonce: ($t.nonce // "" | num | tostring), to: $t.to, input: ($t.input // $t.data // "0x"),
+          value: ($t.value // "0x0"),
+          contract: (if .transactionType == "CREATE" then .contractAddress else null end),
+          created: ([.additionalContracts[]?.address]
+            + (if .transactionType == "CREATE2" then [.contractAddress] else [] end)) }]
+    | unique_by([.chain, .from, .nonce])' "${files[@]}"
+}
+
+RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=()
 for (( r = 0; r < n_runs; r++ )); do
   script=$(run_cfg "$r" script)
   rpc_env=$(run_cfg "$r" rpc_env)
+  fork_block=$(run_cfg "$r" fork_block)
+  mapfile -t senders < <(run_cfg "$r" senders | jq -r '.[] | ascii_downcase')
   label="the script"
   (( n_runs > 1 )) && { label="run $((r + 1)) ($script)"; printf '    run %d   : %s\n' "$((r + 1))" "$script"; }
   args=()
-  RUN_CHAIN[r]="" RUN_BLOCK[r]=""
+  RUN_CHAIN[r]="" RUN_BLOCK[r]="" RUN_PINNED[r]=""
   if [[ -n "$rpc_env" ]]; then
     url="${!rpc_env:-}"
     [[ -n "$url" ]] || die "rpc_env names $rpc_env, which is not set"
     RUN_CHAIN[r]=$(cast chain-id --rpc-url "$url") || die "could not read the chain id from \$$rpc_env"
-    RUN_BLOCK[r]=$(cast block-number --rpc-url "$url" 2>/dev/null || true)
-    # The URL is not printed: it often carries an API key.
-    printf '    rpc      : $%s (chain %s, block %s)\n' "$rpc_env" "${RUN_CHAIN[r]}" "${RUN_BLOCK[r]:-?}"
     args=(--rpc-url "$url")
+    if [[ -n "$fork_block" ]]; then
+      RUN_BLOCK[r]="$fork_block" RUN_PINNED[r]=" pinned"
+      args+=(--fork-block-number "$fork_block")
+    else
+      RUN_BLOCK[r]=$(cast block-number --rpc-url "$url" 2>/dev/null || true)
+    fi
+    # The URL is not printed: it often carries an API key.
+    printf '    rpc      : $%s (chain %s, block %s%s)\n' "$rpc_env" "${RUN_CHAIN[r]}" "${RUN_BLOCK[r]:-?}" "${RUN_PINNED[r]}"
   fi
+  # One sender is what a bare vm.startBroadcast() broadcasts from. Several must be
+  # named in the script, since forge takes one --sender.
+  (( ${#senders[@]} == 1 )) && args+=(--sender "${senders[0]}")
   mapfile -t run_claims < <(claims_of_run "$r")
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
-  in_clone forge script "$script" "${args[@]}" >/dev/null 2>"$WORK/forge.err" \
+  in_clone forge script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
   snapshot "$WORK/snap.$r.after"
   written_between "$WORK/snap.$r.before" "$WORK/snap.$r.after" >"$WORK/written.$r"
@@ -273,24 +315,46 @@ for (( r = 0; r < n_runs; r++ )); do
     printf '%s\n' "$f"
   done <"$WORK/written.$r" >"$WORK/outputs.$r"
 
-  # A deploy simulated under vm.startBroadcast is recorded in a dry-run file. Its
-  # address depends on the deployer's live nonce, so calldata that embeds it
-  # changes once the real deploy lands, and cannot be re-derived without the key.
-  # Forge writes each record twice, as -latest and under a timestamp, so only the
-  # -latest ones are summed; the largest single file is the floor if none is.
-  bc_tx=0 bc_max=0 bc_file=""
-  while IFS= read -r f; do
-    [[ "$f" == "$broadcast_dir/"*.json ]] || continue
-    n=$(jq '[.. | objects | select(has("transactions")) | .transactions | arrays | length] | add // 0' \
-      "$WORK/repo/$f" 2>/dev/null || echo 0)
-    (( n > 0 )) || continue
-    bc_file="$f"
-    (( n > bc_max )) && bc_max=$n
-    [[ "$f" == *latest* ]] && bc_tx=$((bc_tx + n))
-  done <"$WORK/written.$r"
-  (( bc_tx > 0 )) || bc_tx=$bc_max
-  if (( bc_tx > 0 )); then
-    record_fail "$label simulates $bc_tx transaction(s) from an EOA ($bc_file): Safe calldata may depend on them; deploy in a separate script and pin the addresses"
+  # A transaction simulated under vm.startBroadcast is recorded in a dry-run file.
+  # The addresses it creates follow the sender's nonce, which moves, so Safe
+  # calldata built on them re-derives only from a pinned block and sender. Step 7
+  # then checks the sender's real transactions are the simulated ones.
+  # An unreadable record counts as unknown transactions, not as none.
+  eoa_txs "$WORK/written.$r" >"$WORK/eoa.$r.json" 2>/dev/null \
+    || { echo '[]' >"$WORK/eoa.$r.json"; record_fail "$label wrote a dry-run record that could not be read"; }
+  bc_tx=$(jq length "$WORK/eoa.$r.json")
+  if (( bc_tx > 0 )) && (( ${#senders[@]} == 0 )); then
+    record_fail "$label simulates $bc_tx transaction(s) from an EOA: Safe calldata may depend on them; pin fork_block and senders, or deploy in a separate script and pin the addresses"
+  elif (( bc_tx > 0 )); then
+    bad=0
+    while IFS= read -r from; do
+      [[ " ${senders[*]} " == *" $from "* ]] && continue
+      bad=1; record_fail "$label simulates a transaction from $from, which is not in senders"
+    done < <(jq -r '[.[].from] | unique[]' "$WORK/eoa.$r.json")
+    # A fork the script opens itself is not at fork_block.
+    while IFS= read -r chain; do
+      bad=1; record_fail "$label simulates a transaction on chain $chain, not on its pinned fork of chain ${RUN_CHAIN[r]}"
+    done < <(jq -r --arg c "${RUN_CHAIN[r]}" '[.[].chain] | unique[] | select(. != $c)' "$WORK/eoa.$r.json")
+    # forge on chain id 10 (1.8.1 and 1.8.7) and 8453 (1.8.1) runs a salted `new`
+    # from a sender as a CREATE2 from the sender itself, but records and
+    # broadcasts a plain CREATE, so the script sees an address the deploy never
+    # fills. Every contract a sender creates in the script's own trace must be one
+    # the record predicts. https://github.com/foundry-rs/foundry/issues/18048
+    # A trace that cannot be found fails, so a change in forge's JSON cannot pass.
+    if ! unpredicted=$(jq -rs --slurpfile txs "$WORK/eoa.$r.json" '
+        ([$txs[0][] | (.contract // empty), .created[]] | map(ascii_downcase)) as $want
+        | [.[] | objects | .traces? // empty | .[] | select(.[0] == "Execution") | .[1].arena[].trace]
+        | if length == 0 then error("no execution trace") else . end
+        | [.[] | select((.kind == "CREATE" or .kind == "CREATE2") and .success
+                        and ((.caller | ascii_downcase) as $c | $ARGS.positional | index($c)))
+           | .address | ascii_downcase] | unique - $want | .[]' \
+        "$WORK/forge.$r.out" --args "${senders[@]}" 2>/dev/null); then
+      bad=1; record_fail "$label: could not read the script's trace to compare with forge's record"
+    fi
+    for a in $unpredicted; do
+      bad=1; record_fail "$label: a sender created $a in the script, which forge's record does not predict"
+    done
+    (( bad )) || ok "simulates $bc_tx transaction(s) from pinned senders at block $fork_block"
   fi
 
   expected_paths=()
@@ -555,7 +619,46 @@ for (( i = 0; i < n_claims; i++ )); do
   [[ -n "${R_CHILD[i]}" ]] && R_CHILD_URL[i]=$(safe_ui_url "$prefix" "$(cfg "$i" child_safe)" "${R_CHILD[i]}")
 done
 
-# --- 7. attest: sign off on the attested transactions and submit -------------
+# --- 7. the pinned senders' transactions on chain -----------------------------
+# The Safe calldata is right only if each transaction the run simulated from a
+# pinned sender is the one that sender actually sent at that nonce. One that does
+# not match is evidence and always fails. One not yet sent, or not readable, fails
+# when the live checks are required, so --attest never signs a Safe tx built on a
+# deploy that has not landed.
+RUN_LANDED=()
+for (( r = 0; r < n_runs; r++ )); do
+  RUN_LANDED[r]='[]'
+  [[ -s "$WORK/eoa.$r.json" && "$(jq length "$WORK/eoa.$r.json")" != 0 ]] || continue
+  [[ -n "$(run_cfg "$r" fork_block)" && "$(run_cfg "$r" senders)" != '[]' ]] || continue
+  label="the script"
+  (( n_runs > 1 )) && label="run $((r + 1)) ($(run_cfg "$r" script))"
+  step "Senders' transactions on chain ($label)"
+  rpc_env=$(run_cfg "$r" rpc_env)
+  required=$(( REQUIRE_LIVE || SUBMIT ))
+  if ! ETH_RPC_URL="${!rpc_env}" bash "$SCRIPT_DIR/lib/landed.sh" "$WORK/eoa.$r.json" \
+       "$(run_cfg "$r" fork_block)" >"$WORK/landed.$r.jsonl" 2>"$WORK/landed.$r.err"; then
+    printable <"$WORK/landed.$r.err" >&2
+    record_fail "$label: could not look up its senders' transactions"
+    continue
+  fi
+  RUN_LANDED[r]=$(jq -cs . "$WORK/landed.$r.jsonl")
+  # Hashes and details come from the RPC, so they are printed as plain ASCII.
+  while IFS=$'\x1f' read -r state from nonce block hash detail; do
+    what="nonce $nonce from $from"
+    case "$state" in
+      landed) ok "$what landed as simulated in block $block ($hash)" ;;
+      differs) record_fail "$label: $what does not match the simulation: $detail" ;;
+      failed)  record_fail "$label: $what landed in block $block but reverted ($hash)" ;;
+      *)
+        msg="$what has not landed or could not be read ($state: $detail)"
+        if (( required )); then record_fail "$label: $msg"
+        else warn "$msg: skipping (use --require-live to enforce)"; fi ;;
+    esac
+  done < <(jq -r '[.state, .from, .nonce, .block, .tx_hash, .detail] | map(tostring | gsub("[^ -~]"; ""))
+    | join("\u001f")' "$WORK/landed.$r.jsonl")
+done
+
+# --- 8. attest: sign off on the attested transactions and submit -------------
 # Runs only when every offline check passed, so what is signed and sent is the
 # canonical form those checks hashed, never the producer's JSON as given. Every
 # claim's preflight runs before the first signature, so a refusal on one chain
@@ -677,7 +780,7 @@ if [[ "$SUBMIT" == 1 ]]; then
   fi
 fi
 
-# --- 8. live integrity: compare against the Safe Transaction Service ----------
+# --- 9. live integrity: compare against the Safe Transaction Service ----------
 # live_check <claim> <network> <safe> <nonce> <expected hash> <required> <where>
 # Compares what is queued at <nonce> with <expected hash>. A competing or
 # different transaction always fails; one that cannot be read fails only when
@@ -824,11 +927,18 @@ claim_json() { # <claim index>
 }
 
 for (( i = 0; i < n_claims; i++ )); do claim_json "$i"; done >"$WORK/claims.json"
+# A run's sender transactions carry step 7's result when it ran; otherwise they
+# are as simulated, with no state.
 for (( r = 0; r < n_runs; r++ )); do
+  txs="${RUN_LANDED[r]:-[]}"
+  [[ "$txs" != '[]' ]] || txs=$(jq -c '[.[] | {chain, from, nonce, contract, created}]' "$WORK/eoa.$r.json" 2>/dev/null || echo '[]')
   jq -n --arg script "$(run_cfg "$r" script)" --arg rpc_env "$(run_cfg "$r" rpc_env)" \
     --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" \
+    --arg fork_block "$(run_cfg "$r" fork_block)" --argjson senders "$(run_cfg "$r" senders)" \
     --argjson written "$(jq -cRn '[inputs | select(. != "")]' <"$WORK/outputs.$r" 2>/dev/null || echo '[]')" \
-    '{script: $script, rpc_env: $rpc_env, chain_id: $chain_id, block: $block, written: $written}'
+    --argjson txs "$(jq -c 'map(del(.input, .to, .value))' <<<"$txs")" \
+    '{script: $script, rpc_env: $rpc_env, chain_id: $chain_id, block: $block,
+      fork_block: $fork_block, senders: $senders, written: $written, sender_transactions: $txs}'
 done >"$WORK/runs.json"
 
 jq -n \
@@ -847,12 +957,16 @@ jq -n \
     { forge: $forge_version, forge_commit: $forge_commit,
       cast: $cast_version, producer_solc: $producer_solc } as $toolchain
     | if $layout == "flat" then
-        # The single-claim document keeps its original shape.
+        # The single-claim document keeps its original shape. Transactions from
+        # pinned senders are added only when there are some.
         $claims[0] as $c
         | { attested: $attested,
             producer: { repo: $producer_repo, commit: $producer_commit, script: $runs[0].script },
             safe: $c.safe, toolchain: $toolchain, hashes: $c.hashes,
             nested: $c.nested, proposal: $c.proposal, failures: $failures }
+          + (if ($runs[0].sender_transactions | length) > 0
+             then { fork_block: $runs[0].fork_block, sender_transactions: $runs[0].sender_transactions }
+             else {} end)
       else
         { attested: $attested, layout: $layout,
           producer: { repo: $producer_repo, commit: $producer_commit },
