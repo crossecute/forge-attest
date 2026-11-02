@@ -339,7 +339,7 @@ for (( r = 0; r < n_runs; r++ )); do
     # from a sender as a CREATE2 from the sender itself, but records and
     # broadcasts a plain CREATE, so the script sees an address the deploy never
     # fills. Every contract a sender creates in the script's own trace must be one
-    # the record predicts.
+    # the record predicts. https://github.com/foundry-rs/foundry/issues/18048
     # A trace that cannot be found fails, so a change in forge's JSON cannot pass.
     if ! unpredicted=$(jq -rs --slurpfile txs "$WORK/eoa.$r.json" '
         ([$txs[0][] | (.contract // empty), .created[]] | map(ascii_downcase)) as $want
