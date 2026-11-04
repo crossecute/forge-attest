@@ -608,7 +608,30 @@ assert_contains "a key set twice is refused" "$(claim_err "$TMP/dup.toml")" \
 
 { cat "$TMP/e2e.toml"; echo '[extra]'; } >"$TMP/table.toml"
 assert_contains "a [table] header is refused" "$(claim_err "$TMP/table.toml")" \
-  "[table] headers are not supported"
+  "unsupported table header"
+
+run_config() {
+  printf 'producer_repo = "file://%s"\nproducer_commit = "%s"\n[[run]]\nscript = "script/Build.s.sol:Build"\n' \
+    "$PRODUCER" "$PRODUCER_COMMIT"
+}
+run_claim() {
+  printf '\n[[run.claim]]\noutput_path = "out/tx.json"\n'
+}
+{ run_config; printf '[run.env]\nMODE = "first"\nMODE = "second"\n'; run_claim; } >"$TMP/env-duplicate.toml"
+assert_contains "duplicate producer environment keys are refused" \
+  "$(claim_err "$TMP/env-duplicate.toml")" "key set more than once: MODE"
+{ run_config; printf '[run.env]\nBAD-NAME = "value"\n'; run_claim; } >"$TMP/env-name.toml"
+assert_contains "invalid environment names are refused" \
+  "$(claim_err "$TMP/env-name.toml")" "invalid producer environment name: BAD-NAME"
+{ run_config; printf '[run.env]\nSAFE_API_KEY = "value"\n'; run_claim; } >"$TMP/env-secret.toml"
+assert_contains "run.env cannot restore the signing service credential" \
+  "$(claim_err "$TMP/env-secret.toml")" "invalid producer environment name: SAFE_API_KEY"
+{ run_config; printf '[run.env]\nMODE = true\n'; run_claim; } >"$TMP/env-type.toml"
+assert_contains "producer environment values must be strings" \
+  "$(claim_err "$TMP/env-type.toml")" "values must be double-quoted strings: MODE"
+{ run_config; printf '[run.env]\n[run.env]\n'; run_claim; } >"$TMP/env-table.toml"
+assert_contains "a repeated environment table is refused even when empty" \
+  "$(claim_err "$TMP/env-table.toml")" "repeated [run.env]"
 
 sed "s|^producer_commit .*|producer_commit = \"${PRODUCER_COMMIT:0:12}\"|" "$TMP/e2e.toml" >"$TMP/short.toml"
 assert_contains "an abbreviated producer_commit is refused" "$(claim_err "$TMP/short.toml")" \
@@ -1080,6 +1103,13 @@ export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B" RPC_C="
 MULTI="$TMP/multi-producer"
 mkdir -p "$MULTI/script"
 cp "$PRODUCER/foundry.toml" "$MULTI/"
+cat >>"$MULTI/foundry.toml" <<'EOF'
+
+[profile.producer]
+out = "profile-build"
+cache_path = "profile-cache"
+test = "producer-tests"
+EOF
 cat >"$MULTI/script/Multi.s.sol" <<'EOF'
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
@@ -1091,6 +1121,7 @@ interface Vm {
     function stopBroadcast() external;
     function envString(string calldata name) external view returns (string memory);
     function envOr(string calldata name, bool defaultValue) external view returns (bool);
+    function envOr(string calldata name, string calldata defaultValue) external view returns (string memory);
     function toString(uint256 value) external pure returns (string memory);
     function toString(address value) external pure returns (string memory);
     function projectRoot() external view returns (string memory);
@@ -1141,6 +1172,22 @@ contract PerChain is Base {
 
 contract Twin is Base {
     function run() external { write("a"); write("b"); }
+}
+
+contract Environment is Base {
+    function run() external {
+        string memory literal = vm.envOr("RUN_LITERAL", string(""));
+        if (block.chainid == 10) {
+            require(keccak256(bytes(literal)) == keccak256("$HOME; echo forbidden"));
+            require(bytes(vm.envOr("EMPTY", string("fallback"))).length == 0);
+            require(keccak256(bytes(vm.envString("FOUNDRY_PROFILE"))) == keccak256("producer"));
+        } else {
+            require(bytes(literal).length == 0);
+            require(keccak256(bytes(vm.envOr("FOUNDRY_PROFILE", string("default")))) != keccak256("producer"));
+        }
+        require(bytes(vm.envOr("SAFE_API_KEY", string(""))).length == 0);
+        write(string.concat("tx-", vm.toString(block.chainid)));
+    }
 }
 
 contract Deploy is Base {
@@ -1240,6 +1287,21 @@ sed 's/^rpc_env = "RPC_A"/rpc_env = "FORGE_ATTEST_TEST_UNSET"/' "$TMP/per-chain.
 assert_contains "an rpc_env that is not set is refused" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-unset.toml" 2>&1)" "FORGE_ATTEST_TEST_UNSET, which is not set"
 
+{ multi_head Environment 'rpc_env = "SCOPED_RPC"'
+  printf '[run.env]\nFOUNDRY_PROFILE = "producer"\nRUN_LITERAL = "$HOME; echo forbidden"\nEMPTY = ""\nSCOPED_RPC = "%s"\n' "$RPC_A"
+  claim10 'live = false'
+  printf '\n[[run]]\nscript = "script/Multi.s.sol:Environment"\nrpc_env = "RPC_B"\n'
+  claim8453 'live = false'
+} >"$TMP/scoped-env.toml"
+env_out=$(SAFE_API_KEY=test-key bash "$ROOT/attest.sh" --config "$TMP/scoped-env.toml" --json 2>"$TMP/scoped-env.err")
+assert_eq "run.env is literal, scoped per run and isolated from the Solidity verifier" \
+  "$(jq -r .attested <<<"$env_out")" "true"
+assert_eq "…recording the producer inputs in the verdict" \
+  "$(jq -r '.runs[0].env.RUN_LITERAL' <<<"$env_out")" '$HOME; echo forbidden'
+assert_eq "…without carrying them to the next run" "$(jq -c '.runs[1].env' <<<"$env_out")" '{}'
+assert_eq "a producer profile's build directories are excluded from claimed outputs" \
+  "$(jq -r '.runs[0].written | join(",")' <<<"$env_out")" 'out/tx-10.json'
+
 group "attest.sh: a deploy from pinned senders"
 
 # Anvil's first account deploys, as a Ledger would: the run only names it.
@@ -1266,7 +1328,8 @@ deploy_toml() { # <rpc_env> <block> <chain id> <sender> [run keys...]
   printf '\n[[run.claim]]\noutput_path = "out/deploy-%s.json"\nsafe_address = "%s"\nsafe_nonce = "7"\nlive = false\n' "$3" "$SAFE"
   printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' "$SHA_D" "$HASH_D"
 }
-deploy_toml RPC_A "$BLOCK_A" 10 "$DEPLOYER" >"$TMP/deploy.toml"
+deploy_toml SCOPED_RPC "$BLOCK_A" 10 "$DEPLOYER" \
+  '[run.env]' "SCOPED_RPC = \"$RPC_A\"" >"$TMP/deploy.toml"
 
 pending_out=$(bash "$ROOT/attest.sh" --config "$TMP/deploy.toml" --json 2>"$TMP/pending.err")
 assert_eq "a deploy from a pinned sender is ATTESTED before it lands" "$(jq -r .attested <<<"$pending_out")" "true"

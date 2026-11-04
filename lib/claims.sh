@@ -6,15 +6,15 @@
 # Usage:  claims.sh <attest.toml>  > model.json
 #
 # Two layouts. A flat file is one claim, as before. A file with [[run]] tables
-# keeps the producer keys at the top, one [[run]] per `forge script` call, and one
-# [[run.claim]] per output file that run writes. Only that subset of TOML is
+# keeps the producer keys at the top, one [[run]] per `forge script` call, an
+# optional [run.env], and one [[run.claim]] per output file. Only that subset of TOML is
 # accepted: toml_get reads one section at a time, so anything a TOML parser would
 # read differently (other headers, dotted keys, literal or multi-line strings,
 # escapes, a repeated key) is refused rather than read one way here and another
 # way by a reviewer.
 #
 # Model: { layout: "flat"|"runs", producer: {...},
-#          runs: [{script, rpc_env, fork_block, senders: [...], unclaimed: [...]}],
+#          runs: [{script, rpc_env, fork_block, env: {...}, senders: [...], unclaimed: [...]}],
 #          claims: [{run, output_path, <claim keys>...}] }
 # Every value is a string as written, "" when unset; senders and unclaimed are
 # arrays.
@@ -55,8 +55,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     (( runs )) || die "config line $lineno: [[run.claim]] before any [[run]]"
     claims_in_run=$((claims_in_run + 1))
     sections+=("r${runs}c$claims_in_run"); current="$TMP/r${runs}c$claims_in_run"; : >"$current"
+  elif [[ "$line" =~ ^\[run\.env\][[:space:]]*(#.*)?$ ]]; then
+    (( runs )) || die "config line $lineno: [run.env] before any [[run]]"
+    current="$TMP/r${runs}.env"
+    [[ ! -f "$current" ]] || die "config line $lineno: repeated [run.env]"
+    : >"$current"
   elif [[ "$line" =~ ^[[:space:]]*\[ ]]; then
-    die "config line $lineno: [table] headers are not supported; only [[run]] and [[run.claim]] are"
+    die "config line $lineno: unsupported table header"
   elif [[ "$line" =~ ^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*(.*)$ ]]; then
     rhs="${BASH_REMATCH[1]}"
     # toml_get takes a basic string verbatim; TOML would decode escapes in it,
@@ -109,6 +114,22 @@ array_json() {
     <<<"$raw" 2>/dev/null || die "config: $2 must be a one-line array of strings: $raw"
 }
 
+environment_json() {
+  local file="$1" key value args=() keys=()
+  [[ -f "$file" ]] || { echo '{}'; return; }
+  mapfile -t keys < <(sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$file")
+  check_section "$file" "[run.env]" "${keys[@]}"
+  for key in "${keys[@]}"; do
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$key" != SAFE_API_KEY ]] \
+      || die "config: invalid producer environment name: $key"
+    grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"" "$file" \
+      || die "config: [run.env] values must be double-quoted strings: $key"
+    value=$(toml_get "$file" "$key")
+    args+=(--arg "$key" "$value")
+  done
+  jq -cn '$ARGS.named' "${args[@]}"
+}
+
 # run_json <file> <script>: one run of the model
 run_json() {
   local u s p
@@ -116,7 +137,8 @@ run_json() {
   while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
   s=$(array_json "$1" senders)
   section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
-    '{script: $script} + . + {senders: $s, unclaimed: $u}'
+    --argjson env "$(environment_json "$1.env")" \
+    '{script: $script} + . + {env: $env, senders: $s, unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
