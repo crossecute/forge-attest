@@ -611,43 +611,46 @@ assert_contains "a key set twice is refused" "$(claim_err "$TMP/dup.toml")" \
 assert_contains "a [table] header is refused" "$(claim_err "$TMP/table.toml")" \
   "unsupported table header"
 
+run_header() { # <script> [run keys...]
+  printf '\n[[run]]\nscript = "%s"\n' "$1"
+  printf '%s\n' "${@:2}"
+}
 run_config() {
-  printf 'producer_repo = "file://%s"\nproducer_commit = "%s"\n[[run]]\nscript = "script/Build.s.sol:Build"\n' \
+  printf 'producer_repo = "file://%s"\nproducer_commit = "%s"\n' \
     "$PRODUCER" "$PRODUCER_COMMIT"
+  run_header script/Build.s.sol:Build
 }
 run_claim() {
   printf '\n[[run.claim]]\noutput_path = "%s"\n' "${1:-out/tx.json}"
 }
-{ run_config; printf '[run.env]\nMODE = "first"\nMODE = "second"\n'; run_claim; } >"$TMP/env-duplicate.toml"
-assert_contains "duplicate producer environment keys are refused" \
-  "$(claim_err "$TMP/env-duplicate.toml")" "key set more than once: MODE"
-{ run_config; printf '[run.env]\nBAD-NAME = "value"\n'; run_claim; } >"$TMP/env-name.toml"
-assert_contains "invalid environment names are refused" \
-  "$(claim_err "$TMP/env-name.toml")" "invalid producer environment name: BAD-NAME"
-{ run_config; printf '[run.env]\nSAFE_API_KEY = "value"\n'; run_claim; } >"$TMP/env-secret.toml"
-assert_contains "run.env cannot restore the signing service credential" \
-  "$(claim_err "$TMP/env-secret.toml")" "invalid producer environment name: SAFE_API_KEY"
-{ run_config; printf '[run.env]\nMODE = true\n'; run_claim; } >"$TMP/env-type.toml"
-assert_contains "producer environment values must be strings" \
-  "$(claim_err "$TMP/env-type.toml")" "values must be double-quoted strings: MODE"
-{ run_config; printf '[run.env]\n[run.env]\n'; run_claim; } >"$TMP/env-table.toml"
-assert_contains "a repeated environment table is refused even when empty" \
-  "$(claim_err "$TMP/env-table.toml")" "repeated [run.env]"
+assert_run_config_error() { # <description> <expected error> [table lines...]
+  local description="$1" expected="$2"
+  shift 2
+  { run_config; printf '%s\n' "$@"; run_claim; } >"$TMP/invalid-run.toml"
+  assert_contains "$description" "$(claim_err "$TMP/invalid-run.toml")" "$expected"
+}
+assert_run_config_error "duplicate producer environment keys are refused" \
+  "key set more than once: MODE" '[run.env]' 'MODE = "first"' 'MODE = "second"'
+assert_run_config_error "invalid environment names are refused" \
+  "invalid producer environment name: BAD-NAME" '[run.env]' 'BAD-NAME = "value"'
+assert_run_config_error "run.env cannot restore the signing service credential" \
+  "invalid producer environment name: SAFE_API_KEY" '[run.env]' 'SAFE_API_KEY = "value"'
+assert_run_config_error "producer environment values must be strings" \
+  "values must be double-quoted strings: MODE" '[run.env]' 'MODE = true'
+assert_run_config_error "a repeated environment table is refused even when empty" \
+  "repeated [run.env]" '[run.env]' '[run.env]'
 
 for key in safe_address safe_nonce chain_id safe_network live output_path expected_safe_tx_hash; do
-  { run_config; printf '[run.defaults]\n%s = "value"\n' "$key"; run_claim; } >"$TMP/default-key.toml"
-  assert_contains "run.defaults refuses the claim-specific field $key" \
-    "$(claim_err "$TMP/default-key.toml")" "unknown key in [run.defaults]: $key"
+  assert_run_config_error "run.defaults refuses the claim-specific field $key" \
+    "unknown key in [run.defaults]: $key" '[run.defaults]' "$key = \"value\""
 done
-{ run_config; printf '[run.defaults]\ninput_format = "tx-builder"\ninput_format = "call"\n'; run_claim; } >"$TMP/default-dup.toml"
-assert_contains "duplicate default keys are refused" \
-  "$(claim_err "$TMP/default-dup.toml")" "key set more than once: input_format"
-{ run_config; printf '[run.defaults]\n[run.defaults]\n'; run_claim; } >"$TMP/default-table.toml"
-assert_contains "a repeated defaults table is refused even when empty" \
-  "$(claim_err "$TMP/default-table.toml")" "repeated [run.defaults]"
+assert_run_config_error "duplicate default keys are refused" \
+  "key set more than once: input_format" '[run.defaults]' 'input_format = "tx-builder"' 'input_format = "call"'
+assert_run_config_error "a repeated defaults table is refused even when empty" \
+  "repeated [run.defaults]" '[run.defaults]' '[run.defaults]'
 { run_config; printf '[run.defaults]\ninput_format = "tx-builder"\nsafe_version = "1.3.0"\n'
   run_claim; printf 'safe_version = ""\n'
-  printf '\n[[run]]\nscript = "script/Build.s.sol:Build"\n'; run_claim out/second.json
+  run_header script/Build.s.sol:Build; run_claim out/second.json
 } >"$TMP/default-scope.toml"
 default_model=$(bash "$ROOT/lib/claims.sh" "$TMP/default-scope.toml")
 assert_eq "a claim can explicitly clear a shared default" \
@@ -1235,18 +1238,24 @@ printf 'out/\nforge-out/\ncache/\nbroadcast/\n' >"$MULTI/.gitignore"
 MULTI_COMMIT=$(git -C "$MULTI" rev-parse HEAD)
 (cd "$MULTI" && mkdir -p out && forge script script/Multi.s.sol:Multi >/dev/null 2>&1)
 
-pin() { # <output> <nonce> -> "<canonical sha256> <safeTxHash>"
-  bash "$NORMALIZE" --input "$1" --safe "$SAFE" --nonce "$2" >"$TMP/pin.json" 2>/dev/null
+pin() { # <output> <nonce> [safe] [normalizer args...] -> "<canonical sha256> <safeTxHash>"
+  bash "$NORMALIZE" --input "$1" --safe "${3:-$SAFE}" --nonce "$2" "${@:4}" >"$TMP/pin.json" 2>/dev/null
   printf '%s %s' "$(canonical_sha <"$TMP/pin.json")" "$(safe_tx_hash "$TMP/pin.json")"
+}
+pinned_claim() { # <output> <safe> <nonce> [normalizer args...]
+  local output="$1" safe="$2" nonce="$3" digest hash
+  read -r digest hash <<<"$(pin "$MULTI/$output" "$nonce" "$safe" "${@:4}")"
+  run_claim "$output"
+  printf 'safe_address = "%s"\nsafe_nonce = "%s"\nlive = false\n' "$safe" "$nonce"
+  printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' "$digest" "$hash"
 }
 read -r SHA10 HASH10 <<<"$(pin "$MULTI/out/tx-10.json" 3)"
 read -r SHA8453 HASH8453 <<<"$(pin "$MULTI/out/tx-8453.json" 5)"
 SAFE_CS=$(cast to-check-sum-address "$SAFE")
 
 multi_head() { # <script contract> [run keys...]
-  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n\n[[run]]\nscript = "script/Multi.s.sol:%s"\n' \
-    "$MULTI" "$MULTI_COMMIT" "$1"
-  printf '%s\n' "${@:2}"
+  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n' "$MULTI" "$MULTI_COMMIT"
+  run_header "script/Multi.s.sol:$1" "${@:2}"
 }
 claim10() { # [extra keys...]
   printf '\n[[run.claim]]\noutput_path = "out/tx-10.json"\nsafe_network = "optimism"\nsafe_address = "%s"\nsafe_nonce = "3"\nexpected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
@@ -1292,7 +1301,7 @@ assert_contains "…counting them" "$(jq -r '.failures[]' <<<"$deploy_out")" "si
 
 # One run per chain, each given its RPC: a claim belongs to the run that wrote it.
 { multi_head PerChain 'rpc_env = "RPC_A"'; claim10 'live = false'
-  printf '\n[[run]]\nscript = "script/Multi.s.sol:PerChain"\nrpc_env = "RPC_B"\n'; claim8453 'live = false'
+  run_header script/Multi.s.sol:PerChain 'rpc_env = "RPC_B"'; claim8453 'live = false'
 } >"$TMP/per-chain.toml"
 per_out=$(bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
 assert_eq "one run per chain is ATTESTED" "$(jq -r .attested <<<"$per_out")" "true"
@@ -1315,7 +1324,7 @@ assert_contains "an rpc_env that is not set is refused" \
 { multi_head Environment 'rpc_env = "SCOPED_RPC"'
   printf '[run.env]\nFOUNDRY_PROFILE = "producer"\nRUN_LITERAL = "$HOME; echo forbidden"\nEMPTY = ""\nSCOPED_RPC = "%s"\n' "$RPC_A"
   claim10 'live = false'
-  printf '\n[[run]]\nscript = "script/Multi.s.sol:Environment"\nrpc_env = "RPC_B"\n'
+  run_header script/Multi.s.sol:Environment 'rpc_env = "RPC_B"'
   claim8453 'live = false'
 } >"$TMP/scoped-env.toml"
 env_out=$(SAFE_API_KEY=test-key bash "$ROOT/attest.sh" --config "$TMP/scoped-env.toml" --json 2>"$TMP/scoped-env.err")
@@ -1443,17 +1452,10 @@ assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
 (cd "$MULTI" && forge script script/Multi.s.sol:Twin >/dev/null 2>&1)
 { multi_head Twin
   printf '[run.defaults]\ninput_format = "tx-builder"\nbatch_mode = "multisend"\nsafe_version = "1.3.0"\nmultisend_address = "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"\n'
-  for binding in "a:$SAFE" "b:$CHILD"; do
-    name=${binding%%:*}; address=${binding#*:}
-    args=(--batch-mode multisend --safe-version 1.3.0 --multisend 0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761)
-    [[ "$name" == b ]] && args=(--batch-mode single --safe-version 1.4.1)
-    bash "$NORMALIZE" --input "$MULTI/out/$name.json" --safe "$address" --nonce 9 \
-      "${args[@]}" >"$TMP/twin-pin.json"
-    printf '\n[[run.claim]]\noutput_path = "out/%s.json"\nsafe_address = "%s"\nsafe_nonce = "9"\nlive = false\n' "$name" "$address"
-    printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
-      "$(canonical_sha <"$TMP/twin-pin.json")" "$(safe_tx_hash "$TMP/twin-pin.json")"
-    [[ "$name" == b ]] && printf 'batch_mode = "single"\nsafe_version = "1.4.1"\nmultisend_address = ""\n'
-  done
+  pinned_claim out/a.json "$SAFE" 9 --batch-mode multisend --safe-version 1.3.0 \
+    --multisend 0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761
+  pinned_claim out/b.json "$CHILD" 9 --batch-mode single --safe-version 1.4.1
+  printf 'batch_mode = "single"\nsafe_version = "1.4.1"\nmultisend_address = ""\n'
 } >"$TMP/twin-defaults.toml"
 defaults_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin-defaults.toml" --json 2>"$TMP/twin-defaults.err")
 assert_eq "one run with shared defaults can attest two different Safes at the same nonce" \
