@@ -208,7 +208,7 @@ The action at the root of this repository runs the same script:
 
 ```yaml
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-- uses: crossecute/forge-attest@27a8ab6a697a619e9f2a120eab77cf0e1d38f7ce # v1.1.2
+- uses: crossecute/forge-attest@9d8905bee25689f0346dfd3db2cc4a5cad0ce31f # v1.2.0
   with:
     config: attest.toml
     require-live: true
