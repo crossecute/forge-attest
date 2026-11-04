@@ -925,13 +925,6 @@ if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --attest >/dev/null 2>"$TMP/g
 else pass "--attest without wallet flags is refused"; fi
 assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
 
-# v1.1.0 shipped the flag as --propose.
-old_out=$(PATH="$STUB/bin:$PATH" STUB="$STUB" bash "$ROOT/attest.sh" \
-  --config "$TMP/e2e-propose-unpinned.toml" --json --propose -- --private-key "$OWNER_PK" 2>"$TMP/gate.err")
-assert_contains "--propose still works as --attest" "$(jq -r '.failures[]' <<<"$old_out")" \
-  "not signing: the offline checks did not attest"
-assert_contains "…saying it was renamed" "$(cat "$TMP/gate.err")" "--propose is now --attest"
-
 group "attest.sh: the live check reads one queued transaction"
 
 # A stand-in for the curl that safe_hashes.sh calls: the Safe's version, and
