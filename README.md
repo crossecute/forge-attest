@@ -200,8 +200,7 @@ delegate of the parent, and the child Safe is the owner, not its signers. Once t
 parent is queued, by an owner or delegate of it, `--require-live` checks it as
 usual. Without that flag, a parent with nothing queued is a warning.
 
-`--attest` accepts owners only, not delegates. It was called `--propose` in
-v1.1.0, and that name still works with a warning.
+`--attest` accepts owners only, not delegates.
 
 ## GitHub Action
 
