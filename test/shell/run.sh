@@ -950,8 +950,14 @@ esac
 EOF
 chmod +x "$LIVE/bin/curl"
 live_tx() { # <canonical> [dataDecoded json] -> one queue entry
-  jq -c --argjson d "${2:-null}" '{to, value, data, operation: (.operation | tonumber), safeTxGas,
-    baseGas, gasPrice, gasToken, refundReceiver, nonce: (.nonce | tonumber), dataDecoded: $d}' "$1"
+  # The service returns EIP-55 addresses, and safe_hashes.sh rejects anything else.
+  local to token receiver
+  to=$(cast to-check-sum-address "$(jq -r .to "$1")")
+  token=$(cast to-check-sum-address "$(jq -r .gasToken "$1")")
+  receiver=$(cast to-check-sum-address "$(jq -r .refundReceiver "$1")")
+  jq -c --argjson d "${2:-null}" --arg to "$to" --arg token "$token" --arg receiver "$receiver" \
+    '{to: $to, value, data, operation: (.operation | tonumber), safeTxGas, baseGas, gasPrice,
+      gasToken: $token, refundReceiver: $receiver, nonce: (.nonce | tonumber), dataDecoded: $d}' "$1"
 }
 live_queue() { jq -s '{count: length, results: .}' >"$LIVE/${1:-queue.json}"; } # [file]
 live_run() { # <attest.sh args...> -> verdict on stdout, report in $TMP/live.err
