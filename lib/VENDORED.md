@@ -4,9 +4,9 @@
 
 - **Source:** https://github.com/pcaversaccio/safe-tx-hashes-util
 - **File:** `safe_hashes.sh`
-- **Pinned commit:** `e3be687a24af013d455b99d1fcacc5c252e2f1e8`
-- **sha256:** `15705ee9a702835b070f5a8cb3bb3c494c0ff091a775fc53f2dbe50c3af62759`
-- **Fetched:** 2026-07-27
+- **Pinned commit:** `80857b75cc977d25205168efbe63d44718326db8`
+- **sha256:** `effce03e82f8ff7ae622a75b5324a291cde8052c8aea2f9b6d579ca4caa94ebe`
+- **Fetched:** 2026-11-04
 - **Licence:** AGPL-3.0-only. See [`LICENSE-AGPL-3.0.txt`](LICENSE-AGPL-3.0.txt)
 
 The rest of this repository is MIT. The MIT grant does **not** extend to this

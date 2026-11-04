@@ -242,7 +242,7 @@ readonly BASE_URL="https://api.safe.global/tx-service"
 # See https://docs.safe.global/advanced/smart-account-supported-networks?service=Transaction+Service.
 declare -A -r API_URLS=(
 	["0g"]="${BASE_URL}/0g"
-	["aetherium"]="${BASE_URL}/aeth"
+	["adi"]="${BASE_URL}/adi"
 	["arbitrum"]="${BASE_URL}/arb1"
 	["arc"]="${BASE_URL}/arc"
 	["arc-testnet"]="${BASE_URL}/arc-testnet"
@@ -252,34 +252,36 @@ declare -A -r API_URLS=(
 	["base-sepolia"]="${BASE_URL}/basesep"
 	["bepolia"]="${BASE_URL}/bep"
 	["berachain"]="${BASE_URL}/berachain"
-	["botanix"]="${BASE_URL}/btc"
+	["bot"]="${BASE_URL}/bot"
 	["bsc"]="${BASE_URL}/bnb"
 	["celo"]="${BASE_URL}/celo"
 	["celo-sepolia"]="${BASE_URL}/celo-sep"
-	["codex"]="${BASE_URL}/codex"
 	["creditcoin"]="${BASE_URL}/ctc"
 	["ethereum"]="${BASE_URL}/eth"
 	["fluent"]="${BASE_URL}/fluent"
+	["fluent-testnet"]="${BASE_URL}/fluent-testnet"
 	["gnosis"]="${BASE_URL}/gno"
 	["gnosis-chiado"]="${BASE_URL}/chi"
 	["hemi"]="${BASE_URL}/hemi"
 	["hyperevm"]="${BASE_URL}/hyper"
 	["ink"]="${BASE_URL}/ink"
+	["kaia"]="${BASE_URL}/kaia"
+	["kairos"]="${BASE_URL}/kairos"
 	["katana"]="${BASE_URL}/katana"
-	["lens"]="${BASE_URL}/lens"
 	["linea"]="${BASE_URL}/linea"
 	["mantle"]="${BASE_URL}/mantle"
 	["mantle-sepolia"]="${BASE_URL}/mnt-sep"
 	["megaeth"]="${BASE_URL}/mega"
 	["monad"]="${BASE_URL}/monad"
 	["monad-testnet"]="${BASE_URL}/monad-testnet"
+	["morph"]="${BASE_URL}/morph"
 	["opbnb"]="${BASE_URL}/opbnb"
 	["optimism"]="${BASE_URL}/oeth"
 	["peaq"]="${BASE_URL}/peaq"
 	["pharos"]="${BASE_URL}/pharos"
 	["plasma"]="${BASE_URL}/plasma"
 	["polygon"]="${BASE_URL}/pol"
-	["polygon-zkevm"]="${BASE_URL}/zkevm"
+	["robinhood"]="${BASE_URL}/robinhood"
 	["robinhood-testnet"]="${BASE_URL}/robinhood-testnet"
 	["scroll"]="${BASE_URL}/scr"
 	["sepolia"]="${BASE_URL}/sep"
@@ -288,16 +290,19 @@ declare -A -r API_URLS=(
 	["tempo"]="${BASE_URL}/tempo"
 	["tempo-moderato"]="${BASE_URL}/tempo-moderato"
 	["unichain"]="${BASE_URL}/unichain"
+	["whitechain"]="${BASE_URL}/wch"
+	["whitechain-sepolia"]="${BASE_URL}/wch-sepolia"
 	["worldchain"]="${BASE_URL}/wc"
 	["xdc"]="${BASE_URL}/xdc"
 	["xlayer"]="${BASE_URL}/okb"
+	["zenith-testnet"]="${BASE_URL}/zenith-testnet"
 	["zksync"]="${BASE_URL}/zksync"
 )
 
 # Define the chain IDs of the supported networks from the Safe transaction service.
 declare -A -r CHAIN_IDS=(
 	["0g"]="16661"
-	["aetherium"]="4663"
+	["adi"]="36900"
 	["arbitrum"]="42161"
 	["arc"]="5042"
 	["arc-testnet"]="5042002"
@@ -307,34 +312,36 @@ declare -A -r CHAIN_IDS=(
 	["base-sepolia"]="84532"
 	["bepolia"]="80069"
 	["berachain"]="80094"
-	["botanix"]="3637"
+	["bot"]="677"
 	["bsc"]="56"
 	["celo"]="42220"
 	["celo-sepolia"]="11142220"
-	["codex"]="81224"
 	["creditcoin"]="102030"
 	["ethereum"]="1"
 	["fluent"]="25363"
+	["fluent-testnet"]="20994"
 	["gnosis"]="100"
 	["gnosis-chiado"]="10200"
 	["hemi"]="43111"
 	["hyperevm"]="999"
 	["ink"]="57073"
+	["kaia"]="8217"
+	["kairos"]="1001"
 	["katana"]="747474"
-	["lens"]="232"
 	["linea"]="59144"
 	["mantle"]="5000"
 	["mantle-sepolia"]="5003"
 	["megaeth"]="4326"
 	["monad"]="143"
 	["monad-testnet"]="10143"
+	["morph"]="2818"
 	["opbnb"]="204"
 	["optimism"]="10"
 	["peaq"]="3338"
 	["pharos"]="1672"
 	["plasma"]="9745"
 	["polygon"]="137"
-	["polygon-zkevm"]="1101"
+	["robinhood"]="4663"
 	["robinhood-testnet"]="46630"
 	["scroll"]="534352"
 	["sepolia"]="11155111"
@@ -343,9 +350,12 @@ declare -A -r CHAIN_IDS=(
 	["tempo"]="4217"
 	["tempo-moderato"]="42431"
 	["unichain"]="130"
+	["whitechain"]="1875"
+	["whitechain-sepolia"]="1874"
 	["worldchain"]="480"
 	["xdc"]="50"
 	["xlayer"]="196"
+	["zenith-testnet"]="936485"
 	["zksync"]="324"
 )
 
@@ -486,7 +496,7 @@ print_transaction_data() {
 	print_field "Data" "$data"
 	case "$operation" in
 	1)
-		if [[ "$operation" -eq 1 && ! " ${TRUSTED_FOR_DELEGATE_CALL[@]} " =~ " ${to} " ]]; then
+		if [[ "$operation" == "1" && ! " ${TRUSTED_FOR_DELEGATE_CALL[@]} " =~ " ${to} " ]]; then
 			print_field "Operation" "Delegatecall ${RED}(UNTRUSTED delegatecall; carefully verify before proceeding!)${RESET}"
 		else
 			print_field "Operation" "Delegatecall ${YELLOW}(trusted delegatecall)${RESET}"
@@ -562,7 +572,15 @@ print_decoded_data() {
 		print_field "Parameters" "Unavailable in interactive mode"
 	else
 		local method=$(echo "$data_decoded" | jq -r ".method")
-		local parameters=$(echo "$data_decoded" | jq -r ".parameters")
+		# The decoded `method` is a function name, so only accept a valid identifier. This also
+		# rejects newlines, which would otherwise allow injecting forged output lines.
+		if [[ ! "$method" =~ ^[A-Za-z0-9_$]+$ ]]; then
+			printf "%s\n" "${BOLD}${RED}Invalid decoded \`method\` \"${method//[^[:print:]]/?}\" returned by the Safe transaction service API!${RESET}" >&2
+			exit 1
+		fi
+		# `jq` JSON-encodes strings, which escapes `C0` control characters, and `-a` additionally escapes
+		# all non-ASCII characters (including `C1`, `BiDi` controls, and zero-width characters) as `\uXXXX`.
+		local parameters=$(echo "$data_decoded" | jq -a ".parameters")
 
 		print_field "Method" "$method"
 		print_field "Parameters" "$parameters"
@@ -609,6 +627,12 @@ validate_version() {
 	if [[ -z "$version" ]]; then
 		echo "${YELLOW}No Safe multisig contract found for the specified network. Please ensure that you have selected the correct network.${RESET}"
 		exit 0
+	fi
+
+	# Validate the Safe multisig version format.
+	if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+L2)?$ ]]; then
+		printf "%s\n" "${BOLD}${RED}Invalid Safe multisig version format: \"${version//[^[:print:]]/?}\"${RESET}" >&2
+		exit 1
 	fi
 
 	local clean_version=$(get_version "$version")
@@ -815,7 +839,7 @@ get_chain_id() {
 validate_address() {
 	local address="$1"
 	if [[ -z "$address" || ! "$address" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
-		echo -e "${BOLD}${RED}Invalid Ethereum address format: \"${address}\"${RESET}" >&2
+		printf "%s\n" "${BOLD}${RED}Invalid Ethereum address format: \"${address//[^[:print:]]/?}\"${RESET}" >&2
 		exit 1
 	fi
 
@@ -832,7 +856,7 @@ validate_value() {
 	local value="$1"
 	local name="$2"
 	if [[ -z "$value" || ! "$value" =~ ^[0-9]+$ ]]; then
-		echo -e "${BOLD}${RED}Invalid \`${name}\` value: \"${value}\". Must be a non-negative integer!${RESET}" >&2
+		printf "%s\n" "${BOLD}${RED}Invalid \`${name}\` value: \"${value//[^[:print:]]/?}\". Must be a non-negative integer!${RESET}" >&2
 		exit 1
 	fi
 }
@@ -844,7 +868,7 @@ warn_if_delegate_call() {
 
 	# Warn the user if `operation` equals `1`, implying a `delegatecall`, and if the `to` address is untrusted.
 	# See: https://github.com/safe-fndn/safe-smart-account/blob/34359e8305d618b7d74e39ed370a6b59ab14f827/contracts/libraries/Enum.sol.
-	if [[ "$operation" -eq 1 && ! " ${TRUSTED_FOR_DELEGATE_CALL[@]} " =~ " ${to} " ]]; then
+	if [[ "$operation" == "1" && ! " ${TRUSTED_FOR_DELEGATE_CALL[@]} " =~ " ${to} " ]]; then
 		cat <<EOF
 
 ${RED}WARNING: The transaction includes an untrusted delegate call to address \`$to\`!
@@ -900,7 +924,7 @@ simulate_transaction() {
 	local rpc_url="${12}"
 
 	# Generate a random signing wallet.
-	local signer_wallet=$(cast wallet new)
+	local signer_wallet=$(cast wallet new 2>&1)
 	local signer_private_key=$(echo "$signer_wallet" | grep "Private key:" | awk '{print $3}')
 	local signer_address=$(echo "$signer_wallet" | grep "Address:" | awk '{print $2}')
 
@@ -1008,6 +1032,13 @@ validate_message_file() {
 	fi
 	if [[ ! -s "$message_file" ]]; then
 		echo -e "${BOLD}${RED}Message file is empty: \"${message_file}\"!${RESET}" >&2
+		exit 1
+	fi
+	# Reject terminal control characters (`C0` except tab, `LF`, and `CR`; `DEL`; and the UTF-8
+	# encoded `C1` range `U+0080-U+009F`), which could rewrite the displayed message while the
+	# hash is computed over the real bytes. Other non-ASCII characters are valid message content.
+	if LC_ALL=C grep -aqE $'[\x01-\x08\x0b\x0c\x0e-\x1f\x7f]|\xc2[\x80-\x9f]' "$message_file"; then
+		echo -e "${BOLD}${RED}Message file \"${message_file}\" contains terminal control characters!${RESET}" >&2
 		exit 1
 	fi
 }
@@ -1158,8 +1189,9 @@ validate_cli_argument() {
 #      parameter values and displays the resulting hashes.
 # 6. If a `nonce` is provided:
 #    - Fetches the transaction data from the Safe transaction service API.
-#    - Extracts the relevant transaction details from the API response.
-#    - If the interactive mode is specified, overrides the desired parameter values.
+#    - Validates the relevant transaction fields extracted from the API response.
+#    - Extracts the validated transaction details from the API response.
+#    - If the interactive mode is specified, overrides the desired parameter values after validating the user-provided inputs.
 #    - Warns the user if the transaction includes an untrusted delegate call.
 #    - Checks for a potential gas token attack.
 #    - Calls the `calculate_hashes` function to compute and display the results.
@@ -1250,8 +1282,13 @@ calculate_safe_hashes() {
 
 	# Get the Safe multisig version.
 	local version=$(curl -sf "${api_url}/api/v1/safes/${address}/" | jq -r ".version // \"0.0.0\"" || echo "0.0.0")
+	# Validate the Safe multisig version format. Empty and unsupported versions are handled separately by `validate_version`.
+	if [[ -n "$version" && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+L2)?$ ]]; then
+		printf "%s\n" "${BOLD}${RED}Invalid Safe multisig version \"${version//[^[:print:]]/?}\" returned by the Safe transaction service API!${RESET}" >&2
+		exit 1
+	fi
 
-	# Safe's API allows 1 request per second without authentication.
+	# Safe's API allows 2 requests per second without authentication.
 	# Wait slightly longer to allow for potential future requests without hitting rate limits.
 	sleep 1.2
 
@@ -1263,8 +1300,13 @@ calculate_safe_hashes() {
 
 		# Get the nested Safe multisig version.
 		nested_safe_version=$(curl -sf "${api_url}/api/v1/safes/${nested_safe_address}/" | jq -r ".version // \"0.0.0\"" || echo "0.0.0")
+		# Validate the nested Safe multisig version format. Empty and unsupported versions are handled separately by `validate_version`.
+		if [[ -n "$nested_safe_version" && ! "$nested_safe_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\+L2)?$ ]]; then
+			printf "%s\n" "${BOLD}${RED}Invalid nested Safe multisig version \"${nested_safe_version//[^[:print:]]/?}\" returned by the Safe transaction service API!${RESET}" >&2
+			exit 1
+		fi
 
-		# Safe's API allows 1 request per second without authentication.
+		# Safe's API allows 2 requests per second without authentication.
 		# Wait slightly longer to allow for potential future requests without hitting rate limits.
 		sleep 1.2
 	fi
@@ -1282,15 +1324,15 @@ ${YELLOW}IMPORTANT:
   If the value is unavailable (e.g. if the API endpoint is down), it will default to zero.
 - If multiple transactions share the same nonce, the first transaction in the array will be selected to provide the default values.
 - No warnings will be shown if multiple transactions share the same nonce. It's recommended to first run a validation without interactive mode enabled!
-- Some parameters (e.g., \`version\`, \`to\`, \`operation\`) enforce valid options, but not all inputs are strictly validated.
-  Please double-check your entries before proceeding.${RESET}
+- Parameters enforce format validation, but valid formatting does not guarantee that the values are semantically correct.
+  Please carefully verify all entries before proceeding.${RESET}
 
 EOF
 		read -rp "Enter the Safe multisig version (default: $version): " user_version
 		if [[ -n "$user_version" ]]; then
 			version="$user_version"
 		fi
-		validate_version $version
+		validate_version "$version"
 
 		# If a nested Safe is used, allow overriding its version as well.
 		if [[ -n "$nested_safe_address" ]]; then
@@ -1298,7 +1340,7 @@ EOF
 			if [[ -n "$user_nested_version" ]]; then
 				nested_safe_version="$user_nested_version"
 			fi
-			validate_version $nested_safe_version
+			validate_version "$nested_safe_version"
 		fi
 	fi
 
@@ -1346,12 +1388,18 @@ EOF
 	if [[ -z "$interactive" ]]; then
 		local count=$(echo "$response" | jq -r ".count // \"0\"")
 
+		# The API response is untrusted: validate `count` before it is used.
+		if [[ ! "$count" =~ ^(0|[1-9][0-9]*)$ ]]; then
+			printf "%s\n" "${BOLD}${RED}Invalid \`count\` value (number of transactions per nonce) \"${count//[^[:print:]]/?}\" returned by the Safe transaction service API. Must be a non-negative integer!${RESET}" >&2
+			exit 1
+		fi
+
 		# Inform the user that no transactions are available for the specified nonce.
-		if [[ $count -eq 0 ]]; then
+		if [[ "$count" == "0" ]]; then
 			echo "${YELLOW}No transaction is available for this nonce!${RESET}"
 			exit 0
 		# Notify the user about multiple transactions with identical nonce values and prompt for user input.
-		elif [[ $count -gt 1 ]]; then
+		elif [[ "$count" != "1" ]]; then
 			cat <<EOF
 ${YELLOW}Several transactions with identical nonce values have been detected.
 This occurrence is normal if you are deliberately replacing an existing transaction.
@@ -1399,6 +1447,26 @@ EOF
 	local refund_receiver=$(echo "$response" | jq -r ".results[$idx].refundReceiver // \"$ZERO_ADDRESS\"")
 	local data_decoded=$(echo "$response" | jq -r ".results[$idx].dataDecoded // \"0x\"")
 
+	# The API response is untrusted: validate `operation` before it is used.
+	if [[ "$operation" != "0" && "$operation" != "1" ]]; then
+		printf "%s\n" "${BOLD}${RED}Invalid \`operation\` value \"${operation//[^[:print:]]/?}\" returned by the Safe transaction service API. Must be 0 (CALL) or 1 (DELEGATECALL)!${RESET}" >&2
+		exit 1
+	fi
+
+	# The API response is untrusted: validate the remaining scalar fields before they are printed
+	# or passed to other tools (in both interactive and non-interactive mode).
+	validate_address "$to"
+	validate_value "$value" "value"
+	if [[ ! "$data" =~ ^0x([0-9a-fA-F]{2})*$ ]]; then
+		printf "%s\n" "${BOLD}${RED}Invalid \`data\` value \"${data//[^[:print:]]/?}\" returned by the Safe transaction service API. Must be a valid hexadecimal string!${RESET}" >&2
+		exit 1
+	fi
+	validate_value "$safe_tx_gas" "safeTxGas"
+	validate_value "$base_gas" "baseGas"
+	validate_value "$gas_price" "gasPrice"
+	validate_address "$gas_token"
+	validate_address "$refund_receiver"
+
 	# If --interactive mode is enabled, the parameter values can be overridden by the user's input.
 	# Overriding nested Safe transaction values is not allowed.
 	if [[ -n "$interactive" ]]; then
@@ -1408,10 +1476,20 @@ EOF
 
 		read -rp "Enter the \`value\` (default: $value): " value_input
 		value="${value_input:-$value}"
-		validate_value $value "value"
+		validate_value "$value" "value"
 
-		read -erp "Enter the \`data\` (default: $data): " data_input
-		data="${data_input:-$data}"
+		while true; do
+			read -erp "Enter the \`data\` (default: $data): " data_input
+			data_input="${data_input:-$data}"
+			if [[ "$data_input" =~ ^0x([0-9a-fA-F]{2})*$ ]]; then
+				data="$data_input"
+				break
+			else
+				cat <<EOF
+${YELLOW}Invalid input. Please enter a valid hexadecimal string.${RESET}
+EOF
+			fi
+		done
 
 		while true; do
 			read -rp "Enter the \`operation\` (default: $operation; 0 = CALL, 1 = DELEGATECALL): " operation_input
@@ -1428,15 +1506,15 @@ EOF
 
 		read -rp "Enter the \`safeTxGas\` (default: $safe_tx_gas): " safe_tx_gas_input
 		safe_tx_gas="${safe_tx_gas_input:-$safe_tx_gas}"
-		validate_value $safe_tx_gas "safeTxGas"
+		validate_value "$safe_tx_gas" "safeTxGas"
 
 		read -rp "Enter the \`baseGas\` (default: $base_gas): " base_gas_input
 		base_gas="${base_gas_input:-$base_gas}"
-		validate_value $base_gas "baseGas"
+		validate_value "$base_gas" "baseGas"
 
 		read -rp "Enter the \`gasPrice\` (default: $gas_price): " gas_price_input
 		gas_price="${gas_price_input:-$gas_price}"
-		validate_value $gas_price "gasPrice"
+		validate_value "$gas_price" "gasPrice"
 
 		read -rp "Enter the \`gasToken\` (default: $gas_token): " gas_token_input
 		gas_token="${gas_token_input:-$gas_token}"
@@ -1494,6 +1572,18 @@ EOF
 		echo -e "${RED}Error: The \`--nested-safe-address\` parameter is missing!${RESET}" >&2
 		echo -e "${RED}Both \`--nested-safe-address\` and \`--nested-safe-nonce\` must be provided for transaction hashes!${RESET}" >&2
 		exit 1
+	fi
+
+	# The decoded "Method" and "Parameters" are provided by the Safe transaction service API.
+	# Always display the warning for nested Safe transactions because of the `approveHash` transaction.
+	# Only check `nested_safe_address` because the preceding validation ensures that both nested Safe
+	# parameters are provided together.
+	if [[ -z "$interactive" && ("$data" != "0x" || -n "$nested_safe_address") ]]; then
+		cat <<EOF
+
+${YELLOW}IMPORTANT: The decoded "Method" and "Parameters" are provided by the Safe transaction service API and are not verified by this script.
+Always independently decode the transaction "Data" yourself before you sign!${RESET}
+EOF
 	fi
 
 	# Simulate the transaction locally with `cast call` and print its trace if an RPC URL is provided.
