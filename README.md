@@ -200,8 +200,7 @@ delegate of the parent, and the child Safe is the owner, not its signers. Once t
 parent is queued, by an owner or delegate of it, `--require-live` checks it as
 usual. Without that flag, a parent with nothing queued is a warning.
 
-`--attest` accepts owners only, not delegates. It was called `--propose` in
-v1.1.0, and that name still works with a warning.
+`--attest` accepts owners only, not delegates.
 
 ## GitHub Action
 
@@ -209,7 +208,7 @@ The action at the root of this repository runs the same script:
 
 ```yaml
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-- uses: crossecute/forge-attest@72523f77ddf4245a4515d07b4e423c844168b2eb # v1.1.0
+- uses: crossecute/forge-attest@453663ed1e2cf8a4d08583e3ff3f79b2c9e75676 # v1.1.1
   with:
     config: attest.toml
     require-live: true
