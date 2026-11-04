@@ -496,6 +496,7 @@ nonce_out=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nonce.toml" 2>&1)
 nonce_rc=$?
 if [[ $nonce_rc -ne 0 ]]; then pass "re-binding the batch to another nonce is NOT ATTESTED"
 else fail "a nonce change went undetected"; fi
+assert_contains "…because the signed hash changed" "$nonce_out" "cast-derived hash != pinned expected_safe_tx_hash"
 
 # forge test exits 0 when nothing matches, so a cross-check pointed at no tests
 # must not count as agreement.
@@ -615,7 +616,7 @@ run_config() {
     "$PRODUCER" "$PRODUCER_COMMIT"
 }
 run_claim() {
-  printf '\n[[run.claim]]\noutput_path = "out/tx.json"\n'
+  printf '\n[[run.claim]]\noutput_path = "%s"\n' "${1:-out/tx.json}"
 }
 { run_config; printf '[run.env]\nMODE = "first"\nMODE = "second"\n'; run_claim; } >"$TMP/env-duplicate.toml"
 assert_contains "duplicate producer environment keys are refused" \
@@ -632,6 +633,27 @@ assert_contains "producer environment values must be strings" \
 { run_config; printf '[run.env]\n[run.env]\n'; run_claim; } >"$TMP/env-table.toml"
 assert_contains "a repeated environment table is refused even when empty" \
   "$(claim_err "$TMP/env-table.toml")" "repeated [run.env]"
+
+for key in safe_address safe_nonce chain_id safe_network live output_path expected_safe_tx_hash; do
+  { run_config; printf '[run.defaults]\n%s = "value"\n' "$key"; run_claim; } >"$TMP/default-key.toml"
+  assert_contains "run.defaults refuses the claim-specific field $key" \
+    "$(claim_err "$TMP/default-key.toml")" "unknown key in [run.defaults]: $key"
+done
+{ run_config; printf '[run.defaults]\ninput_format = "tx-builder"\ninput_format = "call"\n'; run_claim; } >"$TMP/default-dup.toml"
+assert_contains "duplicate default keys are refused" \
+  "$(claim_err "$TMP/default-dup.toml")" "key set more than once: input_format"
+{ run_config; printf '[run.defaults]\n[run.defaults]\n'; run_claim; } >"$TMP/default-table.toml"
+assert_contains "a repeated defaults table is refused even when empty" \
+  "$(claim_err "$TMP/default-table.toml")" "repeated [run.defaults]"
+{ run_config; printf '[run.defaults]\ninput_format = "tx-builder"\nsafe_version = "1.3.0"\n'
+  run_claim; printf 'safe_version = ""\n'
+  printf '\n[[run]]\nscript = "script/Build.s.sol:Build"\n'; run_claim out/second.json
+} >"$TMP/default-scope.toml"
+default_model=$(bash "$ROOT/lib/claims.sh" "$TMP/default-scope.toml")
+assert_eq "a claim can explicitly clear a shared default" \
+  "$(jq -r '.claims[0].safe_version' <<<"$default_model")" ''
+assert_eq "shared defaults apply only within their run" \
+  "$(jq -r '[.claims[].input_format] | join(",")' <<<"$default_model")" 'tx-builder,'
 
 sed "s|^producer_commit .*|producer_commit = \"${PRODUCER_COMMIT:0:12}\"|" "$TMP/e2e.toml" >"$TMP/short.toml"
 assert_contains "an abbreviated producer_commit is refused" "$(claim_err "$TMP/short.toml")" \
@@ -1237,7 +1259,10 @@ claim8453() { # [extra keys...]
   printf '%s\n' "$@"
 }
 
-{ multi_head Multi; claim10 'live = false'; claim8453 'live = false'; } >"$TMP/multi.toml"
+{ multi_head Multi
+  printf '[run.defaults]\ninput_format = "tx-builder"\nsafe_version = "1.3.0"\n'
+  claim10 'live = false'; claim8453 'live = false'
+} >"$TMP/multi.toml"
 multi_out=$(bash "$ROOT/attest.sh" --config "$TMP/multi.toml" --json 2>"$TMP/multi.err")
 assert_eq "one run that writes two chains' outputs is ATTESTED" "$(jq -r .attested <<<"$multi_out")" "true"
 assert_eq "…with a verdict per claim" "$(jq -r '[.claims[] | .attested] | join(",")' <<<"$multi_out")" "true,true"
@@ -1414,6 +1439,29 @@ assert_contains "…even without --require-live" "$(jq -r '.failures[]' <<<"$str
 twin_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin.toml" --json 2>/dev/null)
 assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
   "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_out")" "2"
+
+(cd "$MULTI" && forge script script/Multi.s.sol:Twin >/dev/null 2>&1)
+{ multi_head Twin
+  printf '[run.defaults]\ninput_format = "tx-builder"\nbatch_mode = "multisend"\nsafe_version = "1.3.0"\nmultisend_address = "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"\n'
+  for binding in "a:$SAFE" "b:$CHILD"; do
+    name=${binding%%:*}; address=${binding#*:}
+    args=(--batch-mode multisend --safe-version 1.3.0 --multisend 0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761)
+    [[ "$name" == b ]] && args=(--batch-mode single --safe-version 1.4.1)
+    bash "$NORMALIZE" --input "$MULTI/out/$name.json" --safe "$address" --nonce 9 \
+      "${args[@]}" >"$TMP/twin-pin.json"
+    printf '\n[[run.claim]]\noutput_path = "out/%s.json"\nsafe_address = "%s"\nsafe_nonce = "9"\nlive = false\n' "$name" "$address"
+    printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
+      "$(canonical_sha <"$TMP/twin-pin.json")" "$(safe_tx_hash "$TMP/twin-pin.json")"
+    [[ "$name" == b ]] && printf 'batch_mode = "single"\nsafe_version = "1.4.1"\nmultisend_address = ""\n'
+  done
+} >"$TMP/twin-defaults.toml"
+defaults_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin-defaults.toml" --json 2>"$TMP/twin-defaults.err")
+assert_eq "one run with shared defaults can attest two different Safes at the same nonce" \
+  "$(jq -r .attested <<<"$defaults_out")" true
+assert_eq "each Safe keeps its explicit identity and version in the verdict" \
+  "$(jq -r '[.claims[].safe | "\(.address | ascii_downcase):\(.nonce):\(.version)"] | join(",")' <<<"$defaults_out")" \
+  "${SAFE,,}:9:1.3.0,${CHILD,,}:9:1.4.1"
+
 # A nested claim's approval also takes a nonce, on the child.
 { multi_head Twin
   printf '\n[[run.claim]]\noutput_path = "out/a.json"\nsafe_address = "%s"\nsafe_nonce = "9"\n' "$SAFE"
