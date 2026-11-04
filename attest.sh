@@ -53,7 +53,6 @@ KEEP=0
 JSON=0
 SUBMIT=0
 WALLET=()
-RENAMED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,7 +61,6 @@ while [[ $# -gt 0 ]]; do
     --json) JSON=1; shift ;;
     --keep) KEEP=1; shift ;;
     --attest) SUBMIT=1; shift ;;
-    --propose) SUBMIT=1; RENAMED=1; shift ;;   # the v1.1.0 name
     --) shift; WALLET=("$@"); break ;;
     -h|--help)
       grep -E '^#' "$0" | sed -E 's/^#\??//' | sed -E 's/^ //'; exit 0 ;;
@@ -83,7 +81,6 @@ if [[ "$JSON" == 1 ]]; then
 else
   exec 3>/dev/null
 fi
-[[ "$RENAMED" == 1 ]] && warn "--propose is now --attest; the old name will be removed"
 
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 for bin in git forge cast jq sha256sum; do
