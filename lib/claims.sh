@@ -127,8 +127,12 @@ environment_json() {
   mapfile -t keys < <(section_keys "$file")
   check_section "$file" "[run.env]" "${keys[@]}"
   for key in "${keys[@]}"; do
-    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$key" != SAFE_API_KEY ]] \
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
       || die "config: invalid producer environment name: $key"
+    case "$key" in
+      SAFE_API_KEY|PATH|IFS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|LD_*|DYLD_*|GLIBC_TUNABLES|GCONV_PATH|LIBPATH|SHLIB_PATH)
+        die "config: reserved producer environment name: $key" ;;
+    esac
     grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"" "$file" \
       || die "config: [run.env] values must be double-quoted strings: $key"
     value=$(toml_get "$file" "$key")

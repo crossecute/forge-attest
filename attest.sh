@@ -86,6 +86,8 @@ fi
 for bin in git forge cast jq sha256sum; do
   command -v "$bin" >/dev/null 2>&1 || die "required tool not found: $bin"
 done
+forge_bin=$(type -P forge) || die "forge must be an executable on PATH"
+[[ "$forge_bin" == /* ]] || forge_bin="$PWD/$forge_bin"
 
 WORK="$(mktemp -d)"
 cleanup() { [[ "$KEEP" == 1 ]] && { warn "kept workdir: $WORK"; return; }; rm -rf "$WORK"; }
@@ -158,9 +160,9 @@ echo
 # unrelated reason. Recording it makes a divergence explain itself. Pinning it is
 # opt-in.
 step "Toolchain"
-forge_version=$(forge --version 2>/dev/null | head -1 | sed -E 's/^forge (Version: )?//')
+forge_version=$("$forge_bin" --version 2>/dev/null | head -1 | sed -E 's/^forge (Version: )?//')
 cast_version=$(cast  --version 2>/dev/null | head -1 | sed -E 's/^cast (Version: )?//')
-forge_commit=$(forge --version 2>/dev/null | awk '/Commit SHA:/ {print $3; exit}')
+forge_commit=$("$forge_bin" --version 2>/dev/null | awk '/Commit SHA:/ {print $3; exit}')
 printf '    forge    : %s%s\n' "$forge_version" "${forge_commit:+ ($forge_commit)}"
 printf '    cast     : %s\n' "$cast_version"
 if [[ -z "$expected_forge_version" ]]; then
@@ -274,7 +276,7 @@ for (( r = 0; r < n_runs; r++ )); do
   mapfile -t producer_env < <(run_cfg "$r" env | jq -r 'to_entries[] | "\(.key)=\(.value)"')
   # Profiles can change output directories. Use the producer's environment for
   # both directory discovery and execution, without exporting it to the verifier.
-  forge_dirs=$(in_clone env "${producer_env[@]}" forge config --json 2>/dev/null \
+  forge_dirs=$(in_clone env "${producer_env[@]}" "$forge_bin" config --json 2>/dev/null \
     | jq -r '.out, .cache_path, .broadcast' 2>/dev/null) || forge_dirs=$'out\ncache\nbroadcast'
   mapfile -t forge_dirs <<<"$forge_dirs"
   for k in "${!forge_dirs[@]}"; do
@@ -284,7 +286,10 @@ for (( r = 0; r < n_runs; r++ )); do
   args=()
   RUN_CHAIN[r]="" RUN_BLOCK[r]="" RUN_PINNED[r]="" RUN_RPC[r]=""
   if [[ -n "$rpc_env" ]]; then
-    url=$(in_clone env "${producer_env[@]}" printenv "$rpc_env") || url=""
+    url=$(
+      unset SAFE_API_KEY
+      run_cfg "$r" env | jq -r --arg key "$rpc_env" --arg inherited "${!rpc_env:-}" '.[$key] // $inherited'
+    )
     [[ -n "$url" ]] || die "rpc_env names $rpc_env, which is not set"
     RUN_RPC[r]="$url"
     RUN_CHAIN[r]=$(cast chain-id --rpc-url "$url") || die "could not read the chain id from \$$rpc_env"
@@ -305,7 +310,7 @@ for (( r = 0; r < n_runs; r++ )); do
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
-  in_clone env "${producer_env[@]}" forge script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
+  in_clone env "${producer_env[@]}" "$forge_bin" script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
   snapshot "$WORK/snap.$r.after"
   written_between "$WORK/snap.$r.before" "$WORK/snap.$r.after" >"$WORK/written.$r"
@@ -508,7 +513,7 @@ attest_claim() { # <claim index>
      ATTEST_REFUND_RECEIVER="$refund_receiver" \
      ATTEST_CHILD_SAFE="$child_safe" \
      ATTEST_CHILD_NONCE="$child_nonce" \
-       forge test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
+       "$forge_bin" test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
     sol_hash=$(lc "$(cat "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" 2>/dev/null || echo '')")
     printf '    safeTx   : %s\n' "${sol_hash:-<unavailable>}"
     # forge test exits 0 when no test matches (FOUNDRY_NO_MATCH_TEST set in the

@@ -466,6 +466,15 @@ assert_contains "…reporting the detected format" "$e2e_out" "format   : tx-bui
 assert_contains "…and the inner transaction count" "$e2e_out" "inner tx : 2"
 assert_contains "…with Solidity agreeing with cast" "$e2e_out" "Solidity agrees with cast"
 
+mkdir -p "$TMP/relative-forge"
+ln -s "$(type -P forge)" "$TMP/relative-forge/forge"
+sed 's|^producer_setup .*|producer_setup = "mkdir relative-forge; ln -s /bin/false relative-forge/forge"|' \
+  "$TMP/e2e.toml" >"$TMP/relative-forge.toml"
+relative_out=$(cd "$TMP" && PATH="relative-forge:$PATH" bash "$ROOT/attest.sh" \
+  --config "$TMP/relative-forge.toml" --json 2>"$TMP/relative-forge.err")
+assert_eq "the producer cannot shadow Forge through a relative PATH entry" \
+  "$(jq -r .attested <<<"$relative_out")" true
+
 # The producer stamps a wall-clock `createdAt`, so the raw bytes drift between
 # runs while the canonical digest does not. That is the point of the extra pin.
 sleep 1
@@ -634,7 +643,13 @@ assert_run_config_error "duplicate producer environment keys are refused" \
 assert_run_config_error "invalid environment names are refused" \
   "invalid producer environment name: BAD-NAME" '[run.env]' 'BAD-NAME = "value"'
 assert_run_config_error "run.env cannot restore the signing service credential" \
-  "invalid producer environment name: SAFE_API_KEY" '[run.env]' 'SAFE_API_KEY = "value"'
+  "reserved producer environment name: SAFE_API_KEY" '[run.env]' 'SAFE_API_KEY = "value"'
+for key in PATH IFS BASH_ENV ENV SHELLOPTS BASHOPTS CDPATH GLOBIGNORE \
+  LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH \
+  GLIBC_TUNABLES GCONV_PATH LIBPATH SHLIB_PATH; do
+  assert_run_config_error "run.env refuses the execution environment setting $key" \
+    "reserved producer environment name: $key" '[run.env]' "$key = \"value\""
+done
 assert_run_config_error "producer environment values must be strings" \
   "values must be double-quoted strings: MODE" '[run.env]' 'MODE = true'
 assert_run_config_error "a repeated environment table is refused even when empty" \

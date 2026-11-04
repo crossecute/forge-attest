@@ -494,7 +494,11 @@ Use `[run.env]` for non-secret producer inputs. Values are literal strings, with
 no shell expansion. They override the inherited environment only for that run's
 `forge config` and `forge script` calls. Each run's verdict records them, so keep
 credentials in the external environment. `SAFE_API_KEY` is refused here and is
-removed from producer setup and execution.
+removed from producer setup and execution. Command lookup, shell startup and
+loader settings (`PATH`, `IFS`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`,
+`CDPATH`, `GLOBIGNORE`, `LD_*`, `DYLD_*`, `GLIBC_TUNABLES`, `GCONV_PATH`,
+`LIBPATH` and `SHLIB_PATH`) are reserved. Forge is resolved from the verifier's
+environment before producer setup and invoked by that absolute path throughout.
 
 ```toml
 [[run]]
