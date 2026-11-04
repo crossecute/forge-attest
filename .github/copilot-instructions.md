@@ -89,8 +89,11 @@ Include it in the comment. If you could not write or run one, say so.
    nothing is sent unless every offline check passed and, with several claims,
    every claim's preflight passed.
    A service response can make the run refuse but must not change what is signed.
-6. **The claim and the clone.** The claim is read one way: no headers but `[[run]]`
-   and `[[run.claim]]`, no repeated or unknown keys. Paths from it stay inside the
+6. **The claim and the clone.** The claim is read one way: only `[[run]]`,
+   `[run.env]`, `[run.defaults]` and `[[run.claim]]` headers, no repeated or unknown
+   configuration keys. Producer environment values are literal and scoped to their
+   run. Shared defaults cover normalization fields, with Safe identities and pins
+   explicit per claim. Paths from the claim stay inside the
    clone. Every file a run writes is claimed or listed as unclaimed. The producer's commit is
    checked out and verified by full SHA. Nothing a producer commits (an output file,
    a symlink) can stand in for what its script writes.

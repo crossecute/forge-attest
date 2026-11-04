@@ -466,6 +466,15 @@ assert_contains "…reporting the detected format" "$e2e_out" "format   : tx-bui
 assert_contains "…and the inner transaction count" "$e2e_out" "inner tx : 2"
 assert_contains "…with Solidity agreeing with cast" "$e2e_out" "Solidity agrees with cast"
 
+mkdir -p "$TMP/relative-forge"
+ln -s "$(type -P forge)" "$TMP/relative-forge/forge"
+sed 's|^producer_setup .*|producer_setup = "mkdir relative-forge; ln -s /bin/false relative-forge/forge"|' \
+  "$TMP/e2e.toml" >"$TMP/relative-forge.toml"
+relative_out=$(cd "$TMP" && PATH="relative-forge:$PATH" bash "$ROOT/attest.sh" \
+  --config "$TMP/relative-forge.toml" --json 2>"$TMP/relative-forge.err")
+assert_eq "the producer cannot shadow Forge through a relative PATH entry" \
+  "$(jq -r .attested <<<"$relative_out")" true
+
 # The producer stamps a wall-clock `createdAt`, so the raw bytes drift between
 # runs while the canonical digest does not. That is the point of the extra pin.
 sleep 1
@@ -496,6 +505,7 @@ nonce_out=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nonce.toml" 2>&1)
 nonce_rc=$?
 if [[ $nonce_rc -ne 0 ]]; then pass "re-binding the batch to another nonce is NOT ATTESTED"
 else fail "a nonce change went undetected"; fi
+assert_contains "…because the signed hash changed" "$nonce_out" "cast-derived hash != pinned expected_safe_tx_hash"
 
 # forge test exits 0 when nothing matches, so a cross-check pointed at no tests
 # must not count as agreement.
@@ -608,7 +618,60 @@ assert_contains "a key set twice is refused" "$(claim_err "$TMP/dup.toml")" \
 
 { cat "$TMP/e2e.toml"; echo '[extra]'; } >"$TMP/table.toml"
 assert_contains "a [table] header is refused" "$(claim_err "$TMP/table.toml")" \
-  "[table] headers are not supported"
+  "unsupported table header"
+
+run_header() { # <script> [run keys...]
+  printf '\n[[run]]\nscript = "%s"\n' "$1"
+  printf '%s\n' "${@:2}"
+}
+run_config() {
+  printf 'producer_repo = "file://%s"\nproducer_commit = "%s"\n' \
+    "$PRODUCER" "$PRODUCER_COMMIT"
+  run_header script/Build.s.sol:Build
+}
+run_claim() {
+  printf '\n[[run.claim]]\noutput_path = "%s"\n' "${1:-out/tx.json}"
+}
+assert_run_config_error() { # <description> <expected error> [table lines...]
+  local description="$1" expected="$2"
+  shift 2
+  { run_config; printf '%s\n' "$@"; run_claim; } >"$TMP/invalid-run.toml"
+  assert_contains "$description" "$(claim_err "$TMP/invalid-run.toml")" "$expected"
+}
+assert_run_config_error "duplicate producer environment keys are refused" \
+  "key set more than once: MODE" '[run.env]' 'MODE = "first"' 'MODE = "second"'
+assert_run_config_error "invalid environment names are refused" \
+  "invalid producer environment name: BAD-NAME" '[run.env]' 'BAD-NAME = "value"'
+assert_run_config_error "run.env cannot restore the signing service credential" \
+  "reserved producer environment name: SAFE_API_KEY" '[run.env]' 'SAFE_API_KEY = "value"'
+for key in PATH IFS BASH_ENV ENV SHELLOPTS BASHOPTS CDPATH GLOBIGNORE \
+  LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH \
+  GLIBC_TUNABLES GCONV_PATH LIBPATH SHLIB_PATH; do
+  assert_run_config_error "run.env refuses the execution environment setting $key" \
+    "reserved producer environment name: $key" '[run.env]' "$key = \"value\""
+done
+assert_run_config_error "producer environment values must be strings" \
+  "values must be double-quoted strings: MODE" '[run.env]' 'MODE = true'
+assert_run_config_error "a repeated environment table is refused even when empty" \
+  "repeated [run.env]" '[run.env]' '[run.env]'
+
+for key in safe_address safe_nonce chain_id safe_network live output_path expected_safe_tx_hash; do
+  assert_run_config_error "run.defaults refuses the claim-specific field $key" \
+    "unknown key in [run.defaults]: $key" '[run.defaults]' "$key = \"value\""
+done
+assert_run_config_error "duplicate default keys are refused" \
+  "key set more than once: input_format" '[run.defaults]' 'input_format = "tx-builder"' 'input_format = "call"'
+assert_run_config_error "a repeated defaults table is refused even when empty" \
+  "repeated [run.defaults]" '[run.defaults]' '[run.defaults]'
+{ run_config; printf '[run.defaults]\ninput_format = "tx-builder"\nsafe_version = "1.3.0"\n'
+  run_claim; printf 'safe_version = ""\n'
+  run_header script/Build.s.sol:Build; run_claim out/second.json
+} >"$TMP/default-scope.toml"
+default_model=$(bash "$ROOT/lib/claims.sh" "$TMP/default-scope.toml")
+assert_eq "a claim can explicitly clear a shared default" \
+  "$(jq -r '.claims[0].safe_version' <<<"$default_model")" ''
+assert_eq "shared defaults apply only within their run" \
+  "$(jq -r '[.claims[].input_format] | join(",")' <<<"$default_model")" 'tx-builder,'
 
 sed "s|^producer_commit .*|producer_commit = \"${PRODUCER_COMMIT:0:12}\"|" "$TMP/e2e.toml" >"$TMP/short.toml"
 assert_contains "an abbreviated producer_commit is refused" "$(claim_err "$TMP/short.toml")" \
@@ -1080,6 +1143,13 @@ export RPC_A="http://127.0.0.1:$PORT_A" RPC_B="http://127.0.0.1:$PORT_B" RPC_C="
 MULTI="$TMP/multi-producer"
 mkdir -p "$MULTI/script"
 cp "$PRODUCER/foundry.toml" "$MULTI/"
+cat >>"$MULTI/foundry.toml" <<'EOF'
+
+[profile.producer]
+out = "profile-build"
+cache_path = "profile-cache"
+test = "producer-tests"
+EOF
 cat >"$MULTI/script/Multi.s.sol" <<'EOF'
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
@@ -1091,6 +1161,7 @@ interface Vm {
     function stopBroadcast() external;
     function envString(string calldata name) external view returns (string memory);
     function envOr(string calldata name, bool defaultValue) external view returns (bool);
+    function envOr(string calldata name, string calldata defaultValue) external view returns (string memory);
     function toString(uint256 value) external pure returns (string memory);
     function toString(address value) external pure returns (string memory);
     function projectRoot() external view returns (string memory);
@@ -1143,6 +1214,22 @@ contract Twin is Base {
     function run() external { write("a"); write("b"); }
 }
 
+contract Environment is Base {
+    function run() external {
+        string memory literal = vm.envOr("RUN_LITERAL", string(""));
+        if (block.chainid == 10) {
+            require(keccak256(bytes(literal)) == keccak256("$HOME; echo forbidden"));
+            require(bytes(vm.envOr("EMPTY", string("fallback"))).length == 0);
+            require(keccak256(bytes(vm.envString("FOUNDRY_PROFILE"))) == keccak256("producer"));
+        } else {
+            require(bytes(literal).length == 0);
+            require(keccak256(bytes(vm.envOr("FOUNDRY_PROFILE", string("default")))) != keccak256("producer"));
+        }
+        require(bytes(vm.envOr("SAFE_API_KEY", string(""))).length == 0);
+        write(string.concat("tx-", vm.toString(block.chainid)));
+    }
+}
+
 contract Deploy is Base {
     function run() external {
         vm.startBroadcast();
@@ -1166,18 +1253,24 @@ printf 'out/\nforge-out/\ncache/\nbroadcast/\n' >"$MULTI/.gitignore"
 MULTI_COMMIT=$(git -C "$MULTI" rev-parse HEAD)
 (cd "$MULTI" && mkdir -p out && forge script script/Multi.s.sol:Multi >/dev/null 2>&1)
 
-pin() { # <output> <nonce> -> "<canonical sha256> <safeTxHash>"
-  bash "$NORMALIZE" --input "$1" --safe "$SAFE" --nonce "$2" >"$TMP/pin.json" 2>/dev/null
+pin() { # <output> <nonce> [safe] [normalizer args...] -> "<canonical sha256> <safeTxHash>"
+  bash "$NORMALIZE" --input "$1" --safe "${3:-$SAFE}" --nonce "$2" "${@:4}" >"$TMP/pin.json" 2>/dev/null
   printf '%s %s' "$(canonical_sha <"$TMP/pin.json")" "$(safe_tx_hash "$TMP/pin.json")"
+}
+pinned_claim() { # <output> <safe> <nonce> [normalizer args...]
+  local output="$1" safe="$2" nonce="$3" digest hash
+  read -r digest hash <<<"$(pin "$MULTI/$output" "$nonce" "$safe" "${@:4}")"
+  run_claim "$output"
+  printf 'safe_address = "%s"\nsafe_nonce = "%s"\nlive = false\n' "$safe" "$nonce"
+  printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' "$digest" "$hash"
 }
 read -r SHA10 HASH10 <<<"$(pin "$MULTI/out/tx-10.json" 3)"
 read -r SHA8453 HASH8453 <<<"$(pin "$MULTI/out/tx-8453.json" 5)"
 SAFE_CS=$(cast to-check-sum-address "$SAFE")
 
 multi_head() { # <script contract> [run keys...]
-  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n\n[[run]]\nscript = "script/Multi.s.sol:%s"\n' \
-    "$MULTI" "$MULTI_COMMIT" "$1"
-  printf '%s\n' "${@:2}"
+  printf 'producer_repo   = "file://%s"\nproducer_commit = "%s"\n' "$MULTI" "$MULTI_COMMIT"
+  run_header "script/Multi.s.sol:$1" "${@:2}"
 }
 claim10() { # [extra keys...]
   printf '\n[[run.claim]]\noutput_path = "out/tx-10.json"\nsafe_network = "optimism"\nsafe_address = "%s"\nsafe_nonce = "3"\nexpected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' \
@@ -1190,7 +1283,10 @@ claim8453() { # [extra keys...]
   printf '%s\n' "$@"
 }
 
-{ multi_head Multi; claim10 'live = false'; claim8453 'live = false'; } >"$TMP/multi.toml"
+{ multi_head Multi
+  printf '[run.defaults]\ninput_format = "tx-builder"\nsafe_version = "1.3.0"\n'
+  claim10 'live = false'; claim8453 'live = false'
+} >"$TMP/multi.toml"
 multi_out=$(bash "$ROOT/attest.sh" --config "$TMP/multi.toml" --json 2>"$TMP/multi.err")
 assert_eq "one run that writes two chains' outputs is ATTESTED" "$(jq -r .attested <<<"$multi_out")" "true"
 assert_eq "…with a verdict per claim" "$(jq -r '[.claims[] | .attested] | join(",")' <<<"$multi_out")" "true,true"
@@ -1220,7 +1316,7 @@ assert_contains "…counting them" "$(jq -r '.failures[]' <<<"$deploy_out")" "si
 
 # One run per chain, each given its RPC: a claim belongs to the run that wrote it.
 { multi_head PerChain 'rpc_env = "RPC_A"'; claim10 'live = false'
-  printf '\n[[run]]\nscript = "script/Multi.s.sol:PerChain"\nrpc_env = "RPC_B"\n'; claim8453 'live = false'
+  run_header script/Multi.s.sol:PerChain 'rpc_env = "RPC_B"'; claim8453 'live = false'
 } >"$TMP/per-chain.toml"
 per_out=$(bash "$ROOT/attest.sh" --config "$TMP/per-chain.toml" --json 2>/dev/null)
 assert_eq "one run per chain is ATTESTED" "$(jq -r .attested <<<"$per_out")" "true"
@@ -1239,6 +1335,21 @@ assert_contains "a claim another run wrote is NOT ATTESTED" "$(jq -r '.failures[
 sed 's/^rpc_env = "RPC_A"/rpc_env = "FORGE_ATTEST_TEST_UNSET"/' "$TMP/per-chain.toml" >"$TMP/per-chain-unset.toml"
 assert_contains "an rpc_env that is not set is refused" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/per-chain-unset.toml" 2>&1)" "FORGE_ATTEST_TEST_UNSET, which is not set"
+
+{ multi_head Environment 'rpc_env = "SCOPED_RPC"'
+  printf '[run.env]\nFOUNDRY_PROFILE = "producer"\nRUN_LITERAL = "$HOME; echo forbidden"\nEMPTY = ""\nSCOPED_RPC = "%s"\n' "$RPC_A"
+  claim10 'live = false'
+  run_header script/Multi.s.sol:Environment 'rpc_env = "RPC_B"'
+  claim8453 'live = false'
+} >"$TMP/scoped-env.toml"
+env_out=$(SAFE_API_KEY=test-key bash "$ROOT/attest.sh" --config "$TMP/scoped-env.toml" --json 2>"$TMP/scoped-env.err")
+assert_eq "run.env is literal, scoped per run and isolated from the Solidity verifier" \
+  "$(jq -r .attested <<<"$env_out")" "true"
+assert_eq "…recording the producer inputs in the verdict" \
+  "$(jq -r '.runs[0].env.RUN_LITERAL' <<<"$env_out")" '$HOME; echo forbidden'
+assert_eq "…without carrying them to the next run" "$(jq -c '.runs[1].env' <<<"$env_out")" '{}'
+assert_eq "a producer profile's build directories are excluded from claimed outputs" \
+  "$(jq -r '.runs[0].written | join(",")' <<<"$env_out")" 'out/tx-10.json'
 
 group "attest.sh: a deploy from pinned senders"
 
@@ -1266,7 +1377,8 @@ deploy_toml() { # <rpc_env> <block> <chain id> <sender> [run keys...]
   printf '\n[[run.claim]]\noutput_path = "out/deploy-%s.json"\nsafe_address = "%s"\nsafe_nonce = "7"\nlive = false\n' "$3" "$SAFE"
   printf 'expected_canonical_sha256 = "%s"\nexpected_safe_tx_hash = "%s"\n' "$SHA_D" "$HASH_D"
 }
-deploy_toml RPC_A "$BLOCK_A" 10 "$DEPLOYER" >"$TMP/deploy.toml"
+deploy_toml SCOPED_RPC "$BLOCK_A" 10 "$DEPLOYER" \
+  '[run.env]' "SCOPED_RPC = \"$RPC_A\"" >"$TMP/deploy.toml"
 
 pending_out=$(bash "$ROOT/attest.sh" --config "$TMP/deploy.toml" --json 2>"$TMP/pending.err")
 assert_eq "a deploy from a pinned sender is ATTESTED before it lands" "$(jq -r .attested <<<"$pending_out")" "true"
@@ -1351,6 +1463,22 @@ assert_contains "…even without --require-live" "$(jq -r '.failures[]' <<<"$str
 twin_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin.toml" --json 2>/dev/null)
 assert_eq "two claims for one Safe, chain and nonce are both NOT ATTESTED" \
   "$(jq -r '[.claims[].failures[] | select(. == "another claim is for the same Safe, chain and nonce")] | length' <<<"$twin_out")" "2"
+
+(cd "$MULTI" && forge script script/Multi.s.sol:Twin >/dev/null 2>&1)
+{ multi_head Twin
+  printf '[run.defaults]\ninput_format = "tx-builder"\nbatch_mode = "multisend"\nsafe_version = "1.3.0"\nmultisend_address = "0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761"\n'
+  pinned_claim out/a.json "$SAFE" 9 --batch-mode multisend --safe-version 1.3.0 \
+    --multisend 0xA238CBeb142c10Ef7Ad8442C6D1f9E89e07e7761
+  pinned_claim out/b.json "$CHILD" 9 --batch-mode single --safe-version 1.4.1
+  printf 'batch_mode = "single"\nsafe_version = "1.4.1"\nmultisend_address = ""\n'
+} >"$TMP/twin-defaults.toml"
+defaults_out=$(bash "$ROOT/attest.sh" --config "$TMP/twin-defaults.toml" --json 2>"$TMP/twin-defaults.err")
+assert_eq "one run with shared defaults can attest two different Safes at the same nonce" \
+  "$(jq -r .attested <<<"$defaults_out")" true
+assert_eq "each Safe keeps its explicit identity and version in the verdict" \
+  "$(jq -r '[.claims[].safe | "\(.address | ascii_downcase):\(.nonce):\(.version)"] | join(",")' <<<"$defaults_out")" \
+  "${SAFE,,}:9:1.3.0,${CHILD,,}:9:1.4.1"
+
 # A nested claim's approval also takes a nonce, on the child.
 { multi_head Twin
   printf '\n[[run.claim]]\noutput_path = "out/a.json"\nsafe_address = "%s"\nsafe_nonce = "9"\n' "$SAFE"

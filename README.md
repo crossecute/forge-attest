@@ -110,7 +110,7 @@ producer](#several-transactions-from-one-producer)) gets a different document:
   "layout": "runs",
   "producer": { "repo": "…", "commit": "…" },
   "toolchain": { … },
-  "runs": [ { "script": "…", "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…",
+  "runs": [ { "script": "…", "env": {}, "rpc_env": "BASE_RPC_URL", "chain_id": "8453", "block": "…",
               "fork_block": "", "senders": [], "written": ["txs/Upgrade-8453.json"],
               "sender_transactions": [] } ],
   "claims": [ { "output_path": "txs/Upgrade-8453.json", "run": 0, "attested": true,
@@ -447,7 +447,8 @@ reviewing the transaction*. See
 claim.
 
 The claim is a flat list of `key = value` lines. Repeated keys, unknown keys,
-headers other than `[[run]]` and `[[run.claim]]`, and strings that are not one-line
+headers other than `[[run]]`, `[run.env]`, `[run.defaults]` and `[[run.claim]]`,
+and strings that are not one-line
 `"double-quoted"` without backslashes are refused, because this reader and a TOML
 parser would disagree about which value counts. `producer_commit` must be the full
 commit SHA, and `output_path` a path inside the producer repo.
@@ -489,6 +490,72 @@ A claim takes the same keys as a flat claim, plus `live`, `safe_ui_prefix` and
 [`attest.runs.example.toml`](attest.runs.example.toml) is a commented example of
 each kind of run.
 
+Use `[run.env]` for non-secret producer inputs. Values are literal strings, with
+no shell expansion. They override the inherited environment only for that run's
+`forge config` and `forge script` calls. Each run's verdict records them, so keep
+credentials in the external environment. `SAFE_API_KEY` is refused here and is
+removed from producer setup and execution. Command lookup, shell startup and
+loader settings (`PATH`, `IFS`, `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`,
+`CDPATH`, `GLOBIGNORE`, `LD_*`, `DYLD_*`, `GLIBC_TUNABLES`, `GCONV_PATH`,
+`LIBPATH` and `SHLIB_PATH`) are reserved. Forge is resolved from the verifier's
+environment before producer setup and invoked by that absolute path throughout.
+
+```toml
+[[run]]
+script = "script/Upgrade.s.sol:Upgrade"
+
+[run.env]
+FOUNDRY_PROFILE = "ops"             # a profile defined in the producer's foundry.toml
+UPGRADE_MODE = "implementation"
+
+[[run.claim]]
+output_path = "txs/Upgrade-8453.json"
+# Safe identity and expected hashes belong to this claim, as above.
+```
+
+For a producer with npm dependencies, install Node and the pinned package manager
+in the workflow, then use `producer_setup` to install inside the pinned clone:
+
+```toml
+producer_setup = "pnpm install --frozen-lockfile --ignore-scripts --config.node-linker=hoisted"
+```
+
+This uses the producer commit's lockfile. Dependency installation runs once,
+before the individual runs and their environments.
+
+Use `[run.defaults]` to share `input_format`, `batch_mode`, `safe_version` and
+`multisend_address` across a run's claims. A claim can override any of them,
+including setting an empty string to restore the tool's automatic behavior.
+Defaults are resolved before validation and hashing. Safe addresses, chain IDs,
+nonces, service settings, live-check exceptions and expected hashes stay on each
+claim, so one script can produce transactions for several Safes and chains.
+
+```toml
+[[run]]
+script = "script/UpgradeAll.s.sol:UpgradeAll"
+
+[run.defaults]
+input_format = "tx-builder"
+safe_version = "1.3.0"
+
+[[run.claim]]
+output_path = "txs/Upgrade-ops.json"
+chain_id = "8453"
+safe_address = "0x<operations Safe>"
+safe_nonce = "17"
+expected_canonical_sha256 = "<canonical sha256>"
+expected_safe_tx_hash = "0x<safeTxHash>"
+
+[[run.claim]]
+output_path = "txs/Upgrade-admin.json"
+chain_id = "8453"
+safe_address = "0x<admin Safe>"
+safe_nonce = "17"
+safe_version = "1.4.1"             # this Safe overrides the run's default
+expected_canonical_sha256 = "<canonical sha256>"
+expected_safe_tx_hash = "0x<safeTxHash>"
+```
+
 What changes with several claims:
 
 - The producer is cloned once and `producer_setup` runs once. Each run's outputs
@@ -497,8 +564,8 @@ What changes with several claims:
 - A run with `rpc_env` reads its chain id from that RPC, and every claim in it
   must be a transaction for that chain. The verdict records the chain and the
   block number at the time of the run, or `fork_block` when that is pinned. A run
-  without one may fork chains itself; it then reads whatever RPCs the producer
-  names, at their latest block.
+  without one may fork chains itself; the producer controls those forks and must
+  pin their blocks itself when historical reproduction is needed.
 - Two claims for the same Safe, chain and nonce fail, since only one can execute.
 - `live = false` marks a claim whose chain has no Transaction Service in the
   table. Its live check is skipped as a reviewed exception, also under

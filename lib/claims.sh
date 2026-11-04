@@ -6,15 +6,16 @@
 # Usage:  claims.sh <attest.toml>  > model.json
 #
 # Two layouts. A flat file is one claim, as before. A file with [[run]] tables
-# keeps the producer keys at the top, one [[run]] per `forge script` call, and one
-# [[run.claim]] per output file that run writes. Only that subset of TOML is
-# accepted: toml_get reads one section at a time, so anything a TOML parser would
+# keeps the producer keys at the top, one [[run]] per `forge script` call, an
+# optional [run.env] and [run.defaults], and one [[run.claim]] per output file.
+# Only that subset of TOML is accepted: toml_get reads one section at a time,
+# so anything a TOML parser would
 # read differently (other headers, dotted keys, literal or multi-line strings,
 # escapes, a repeated key) is refused rather than read one way here and another
 # way by a reviewer.
 #
 # Model: { layout: "flat"|"runs", producer: {...},
-#          runs: [{script, rpc_env, fork_block, senders: [...], unclaimed: [...]}],
+#          runs: [{script, rpc_env, fork_block, env: {...}, senders: [...], unclaimed: [...]}],
 #          claims: [{run, output_path, <claim keys>...}] }
 # Every value is a string as written, "" when unset; senders and unclaimed are
 # arrays.
@@ -29,6 +30,7 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
 RUN_KEYS=(script rpc_env fork_block senders unclaimed)
+DEFAULT_KEYS=(input_format batch_mode safe_version multisend_address)
 CLAIM_KEYS=(output_path input_format batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
   child_safe child_nonce child_network expected_child_safe_tx_hash
@@ -55,8 +57,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     (( runs )) || die "config line $lineno: [[run.claim]] before any [[run]]"
     claims_in_run=$((claims_in_run + 1))
     sections+=("r${runs}c$claims_in_run"); current="$TMP/r${runs}c$claims_in_run"; : >"$current"
+  elif [[ "$line" =~ ^\[run\.(env|defaults)\][[:space:]]*(#.*)?$ ]]; then
+    table="${BASH_REMATCH[1]}"
+    (( runs )) || die "config line $lineno: [run.$table] before any [[run]]"
+    current="$TMP/r${runs}.$table"
+    [[ ! -f "$current" ]] || die "config line $lineno: repeated [run.$table]"
+    : >"$current"
   elif [[ "$line" =~ ^[[:space:]]*\[ ]]; then
-    die "config line $lineno: [table] headers are not supported; only [[run]] and [[run.claim]] are"
+    die "config line $lineno: unsupported table header"
   elif [[ "$line" =~ ^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*=[[:space:]]*(.*)$ ]]; then
     rhs="${BASH_REMATCH[1]}"
     # toml_get takes a basic string verbatim; TOML would decode escapes in it,
@@ -74,15 +82,19 @@ done <"$CONFIG"
 layout=flat
 (( runs )) && layout=runs
 
+section_keys() {
+  sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$1"
+}
+
 # check_section <file> <what> <allowed key...>
 check_section() {
   local file="$1" what="$2" key dup
   shift 2
-  dup=$(sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$file" | sort | uniq -d)
+  dup=$(section_keys "$file" | sort | uniq -d)
   [[ -z "$dup" ]] || die "config: key set more than once: $(echo $dup) (in $what)"
   while IFS= read -r key; do
     [[ " $* " == *" $key "* ]] || die "config: unknown key in $what: $key"
-  done < <(sed -nE 's/^[[:space:]]*([A-Za-z0-9_-]+)[[:space:]]*=.*/\1/p' "$file")
+  done < <(section_keys "$file")
 }
 
 # section_json <file> <key...>: the keys as a JSON object of strings
@@ -109,6 +121,26 @@ array_json() {
     <<<"$raw" 2>/dev/null || die "config: $2 must be a one-line array of strings: $raw"
 }
 
+environment_json() {
+  local file="$1" key value args=() keys=()
+  [[ -f "$file" ]] || { echo '{}'; return; }
+  mapfile -t keys < <(section_keys "$file")
+  check_section "$file" "[run.env]" "${keys[@]}"
+  for key in "${keys[@]}"; do
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+      || die "config: invalid producer environment name: $key"
+    case "$key" in
+      SAFE_API_KEY|PATH|IFS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|LD_*|DYLD_*|GLIBC_TUNABLES|GCONV_PATH|LIBPATH|SHLIB_PATH)
+        die "config: reserved producer environment name: $key" ;;
+    esac
+    grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"" "$file" \
+      || die "config: [run.env] values must be double-quoted strings: $key"
+    value=$(toml_get "$file" "$key")
+    args+=(--arg "$key" "$value")
+  done
+  jq -cn '$ARGS.named' "${args[@]}"
+}
+
 # run_json <file> <script>: one run of the model
 run_json() {
   local u s p
@@ -116,7 +148,8 @@ run_json() {
   while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
   s=$(array_json "$1" senders)
   section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
-    '{script: $script} + . + {senders: $s, unclaimed: $u}'
+    --argjson env "$(environment_json "$1.env")" \
+    '{script: $script} + . + {env: $env, senders: $s, unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
@@ -133,11 +166,20 @@ else
     check_section "$TMP/r$r" "[[run]] $r" "${RUN_KEYS[@]}"
     run=$(run_json "$TMP/r$r" "$(toml_get "$TMP/r$r" script)")
     runs_json=$(jq -c --argjson r "$run" '. + [$r]' <<<"$runs_json")
+    defaults='{}'
+    if [[ -f "$TMP/r$r.defaults" ]]; then
+      check_section "$TMP/r$r.defaults" "[run.defaults]" "${DEFAULT_KEYS[@]}"
+      defaults=$(section_json "$TMP/r$r.defaults" "${DEFAULT_KEYS[@]}")
+    fi
     c=1
     [[ -f "$TMP/r${r}c1" ]] || die "config: [[run]] $r has no [[run.claim]]"
     while [[ -f "$TMP/r${r}c$c" ]]; do
       check_section "$TMP/r${r}c$c" "[[run.claim]] $c of [[run]] $r" "${CLAIM_KEYS[@]}"
-      claim=$(section_json "$TMP/r${r}c$c" "${CLAIM_KEYS[@]}" | jq --argjson i "$((r - 1))" '{run: $i} + .')
+      mapfile -t keys < <(section_keys "$TMP/r${r}c$c")
+      # Explicit empty values clear defaults, so merge by key presence.
+      claim=$(section_json "$TMP/r${r}c$c" "${CLAIM_KEYS[@]}" | jq --argjson i "$((r - 1))" \
+        --argjson defaults "$defaults" --argjson explicit "$(section_json "$TMP/r${r}c$c" "${keys[@]}")" \
+        '. + $defaults + $explicit + {run: $i}')
       claims_json=$(jq -c --argjson c "$claim" '. + [$c]' <<<"$claims_json")
       c=$((c + 1))
     done

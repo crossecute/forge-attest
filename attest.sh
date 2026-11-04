@@ -86,6 +86,8 @@ fi
 for bin in git forge cast jq sha256sum; do
   command -v "$bin" >/dev/null 2>&1 || die "required tool not found: $bin"
 done
+forge_bin=$(type -P forge) || die "forge must be an executable on PATH"
+[[ "$forge_bin" == /* ]] || forge_bin="$PWD/$forge_bin"
 
 WORK="$(mktemp -d)"
 cleanup() { [[ "$KEEP" == 1 ]] && { warn "kept workdir: $WORK"; return; }; rm -rf "$WORK"; }
@@ -158,9 +160,9 @@ echo
 # unrelated reason. Recording it makes a divergence explain itself. Pinning it is
 # opt-in.
 step "Toolchain"
-forge_version=$(forge --version 2>/dev/null | head -1 | sed -E 's/^forge (Version: )?//')
+forge_version=$("$forge_bin" --version 2>/dev/null | head -1 | sed -E 's/^forge (Version: )?//')
 cast_version=$(cast  --version 2>/dev/null | head -1 | sed -E 's/^cast (Version: )?//')
-forge_commit=$(forge --version 2>/dev/null | awk '/Commit SHA:/ {print $3; exit}')
+forge_commit=$("$forge_bin" --version 2>/dev/null | awk '/Commit SHA:/ {print $3; exit}')
 printf '    forge    : %s%s\n' "$forge_version" "${forge_commit:+ ($forge_commit)}"
 printf '    cast     : %s\n' "$cast_version"
 if [[ -z "$expected_forge_version" ]]; then
@@ -236,15 +238,6 @@ snapshot "$WORK/snap.setup.after"
 # attested, as the reviewed claim asks. It counts as the first run's output.
 written_between "$WORK/snap.setup.before" "$WORK/snap.setup.after" >"$WORK/written.setup"
 
-# Forge's own build and record directories are not outputs.
-forge_dirs=$(in_clone forge config --json 2>/dev/null | jq -r '.out, .cache_path, .broadcast' 2>/dev/null) \
-  || forge_dirs=$'out\ncache\nbroadcast'
-mapfile -t forge_dirs <<<"$forge_dirs"
-for k in "${!forge_dirs[@]}"; do
-  forge_dirs[k]="${forge_dirs[k]#"$repo_real"/}"; forge_dirs[k]="${forge_dirs[k]#"$WORK/repo"/}"
-done
-broadcast_dir="${forge_dirs[2]:-broadcast}"
-
 # eoa_txs <written list>: the transactions forge's dry-run records hold for this
 # run, one per chain, sender and nonce, with the nonce in decimal so every report
 # prints it the same way. Forge writes each record twice, as -latest
@@ -272,7 +265,7 @@ eoa_txs() {
     | unique_by([.chain, .from, .nonce])' "${files[@]}"
 }
 
-RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=()
+RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=() RUN_RPC=()
 for (( r = 0; r < n_runs; r++ )); do
   script=$(run_cfg "$r" script)
   rpc_env=$(run_cfg "$r" rpc_env)
@@ -280,11 +273,25 @@ for (( r = 0; r < n_runs; r++ )); do
   mapfile -t senders < <(run_cfg "$r" senders | jq -r '.[] | ascii_downcase')
   label="the script"
   (( n_runs > 1 )) && { label="run $((r + 1)) ($script)"; printf '    run %d   : %s\n' "$((r + 1))" "$script"; }
+  mapfile -t producer_env < <(run_cfg "$r" env | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+  # Profiles can change output directories. Use the producer's environment for
+  # both directory discovery and execution, without exporting it to the verifier.
+  forge_dirs=$(in_clone env "${producer_env[@]}" "$forge_bin" config --json 2>/dev/null \
+    | jq -r '.out, .cache_path, .broadcast' 2>/dev/null) || forge_dirs=$'out\ncache\nbroadcast'
+  mapfile -t forge_dirs <<<"$forge_dirs"
+  for k in "${!forge_dirs[@]}"; do
+    forge_dirs[k]="${forge_dirs[k]#"$repo_real"/}"; forge_dirs[k]="${forge_dirs[k]#"$WORK/repo"/}"
+  done
+  broadcast_dir="${forge_dirs[2]:-broadcast}"
   args=()
-  RUN_CHAIN[r]="" RUN_BLOCK[r]="" RUN_PINNED[r]=""
+  RUN_CHAIN[r]="" RUN_BLOCK[r]="" RUN_PINNED[r]="" RUN_RPC[r]=""
   if [[ -n "$rpc_env" ]]; then
-    url="${!rpc_env:-}"
+    url=$(
+      unset SAFE_API_KEY
+      run_cfg "$r" env | jq -r --arg key "$rpc_env" --arg inherited "${!rpc_env:-}" '.[$key] // $inherited'
+    )
     [[ -n "$url" ]] || die "rpc_env names $rpc_env, which is not set"
+    RUN_RPC[r]="$url"
     RUN_CHAIN[r]=$(cast chain-id --rpc-url "$url") || die "could not read the chain id from \$$rpc_env"
     args=(--rpc-url "$url")
     if [[ -n "$fork_block" ]]; then
@@ -303,7 +310,7 @@ for (( r = 0; r < n_runs; r++ )); do
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
-  in_clone forge script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
+  in_clone env "${producer_env[@]}" "$forge_bin" script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
   snapshot "$WORK/snap.$r.after"
   written_between "$WORK/snap.$r.before" "$WORK/snap.$r.after" >"$WORK/written.$r"
@@ -506,7 +513,7 @@ attest_claim() { # <claim index>
      ATTEST_REFUND_RECEIVER="$refund_receiver" \
      ATTEST_CHILD_SAFE="$child_safe" \
      ATTEST_CHILD_NONCE="$child_nonce" \
-       forge test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
+       "$forge_bin" test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
     sol_hash=$(lc "$(cat "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" 2>/dev/null || echo '')")
     printf '    safeTx   : %s\n' "${sol_hash:-<unavailable>}"
     # forge test exits 0 when no test matches (FOUNDRY_NO_MATCH_TEST set in the
@@ -630,9 +637,8 @@ for (( r = 0; r < n_runs; r++ )); do
   label="the script"
   (( n_runs > 1 )) && label="run $((r + 1)) ($(run_cfg "$r" script))"
   step "Senders' transactions on chain ($label)"
-  rpc_env=$(run_cfg "$r" rpc_env)
   required=$(( REQUIRE_LIVE || SUBMIT ))
-  if ! ETH_RPC_URL="${!rpc_env}" bash "$SCRIPT_DIR/lib/landed.sh" "$WORK/eoa.$r.json" \
+  if ! ETH_RPC_URL="${RUN_RPC[r]}" bash "$SCRIPT_DIR/lib/landed.sh" "$WORK/eoa.$r.json" \
        "$(run_cfg "$r" fork_block)" >"$WORK/landed.$r.jsonl" 2>"$WORK/landed.$r.err"; then
     printable <"$WORK/landed.$r.err" >&2
     record_fail "$label: could not look up its senders' transactions"
@@ -930,11 +936,12 @@ for (( r = 0; r < n_runs; r++ )); do
   txs="${RUN_LANDED[r]:-[]}"
   [[ "$txs" != '[]' ]] || txs=$(jq -c '[.[] | {chain, from, nonce, contract, created}]' "$WORK/eoa.$r.json" 2>/dev/null || echo '[]')
   jq -n --arg script "$(run_cfg "$r" script)" --arg rpc_env "$(run_cfg "$r" rpc_env)" \
+    --argjson env "$(run_cfg "$r" env)" \
     --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" \
     --arg fork_block "$(run_cfg "$r" fork_block)" --argjson senders "$(run_cfg "$r" senders)" \
     --argjson written "$(jq -cRn '[inputs | select(. != "")]' <"$WORK/outputs.$r" 2>/dev/null || echo '[]')" \
     --argjson txs "$(jq -c 'map(del(.input, .to, .value))' <<<"$txs")" \
-    '{script: $script, rpc_env: $rpc_env, chain_id: $chain_id, block: $block,
+    '{script: $script, env: $env, rpc_env: $rpc_env, chain_id: $chain_id, block: $block,
       fork_block: $fork_block, senders: $senders, written: $written, sender_transactions: $txs}'
 done >"$WORK/runs.json"
 

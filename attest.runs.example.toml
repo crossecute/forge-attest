@@ -6,7 +6,7 @@
 # `unclaimed`, so no transaction is produced and then left out of review.
 #
 # Only this subset of TOML is read: one-line "double-quoted" strings without
-# backslashes, and no headers besides [[run]] and [[run.claim]].
+# backslashes, with [[run]], [run.env], [run.defaults] and [[run.claim]] headers.
 
 producer_repo   = "https://github.com/you/your-ops-repo"
 producer_commit = "<40-hex commit sha>"
@@ -20,6 +20,14 @@ expected_forge_version = "1.7.1-stable"
 [[run]]
 script  = "script/Upgrade.s.sol:Upgrade"
 rpc_env = "OPTIMISM_RPC_URL"
+
+# Literal producer inputs, scoped to this run and recorded in the verdict.
+[run.env]
+UPGRADE_MODE = "implementation"
+
+[run.defaults]
+input_format = "tx-builder"
+safe_version = "1.3.0"
 
 [[run.claim]]
 output_path  = "txs/Upgrade-10.json"
