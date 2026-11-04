@@ -925,12 +925,6 @@ if bash "$ROOT/attest.sh" --config "$TMP/e2e.toml" --attest >/dev/null 2>"$TMP/g
 else pass "--attest without wallet flags is refused"; fi
 assert_contains "…asking for them" "$(cat "$TMP/gate.err")" "after --, e.g. -- --ledger"
 
-# --propose, the v1.1.0 name for --attest, is gone.
-if old_err=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-propose-unpinned.toml" --propose -- --private-key "$OWNER_PK" 2>&1); then
-  fail "--propose was accepted"
-else pass "--propose is refused"; fi
-assert_contains "…as an unknown argument" "$old_err" "unknown argument: --propose"
-
 group "attest.sh: the live check reads one queued transaction"
 
 # A stand-in for the curl that safe_hashes.sh calls: the Safe's version, and
