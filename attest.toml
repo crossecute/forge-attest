@@ -13,7 +13,8 @@ producer_script = "script/BuildSafeTx.s.sol:BuildSafeTx"
 output_path     = "out/safe-tx.json"                    # relative to the producer repo root
 
 # --- Shape of the producer's JSON ----------------------------------------------
-# input_format: auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array
+# input_format: auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array | zeus-traces
+#   zeus-traces the traces of a Zeus MultisigBuilder script; never auto-detected
 #   safe-service exported request; safe profile requires every signed field
 #   safe-eip712 full SafeTx typed data; input_profile is safe (default) or safe-utils
 #   safe-tx     a flat object carrying the full EIP-712 SafeTx field set

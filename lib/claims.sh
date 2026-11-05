@@ -29,7 +29,7 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
-RUN_KEYS=(script rpc_env fork_block senders unclaimed)
+RUN_KEYS=(script rpc_env fork_block sig senders unclaimed)
 DEFAULT_KEYS=(input_format input_profile batch_mode safe_version multisend_address)
 CLAIM_KEYS=(output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
@@ -147,13 +147,13 @@ run_json() {
   u=$(array_json "$1" unclaimed)
   while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
   s=$(array_json "$1" senders)
-  section_json "$1" rpc_env fork_block | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
+  section_json "$1" rpc_env fork_block sig | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
     --argjson env "$(environment_json "$1.env")" \
     '{script: $script} + . + {env: $env, senders: $s, unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
-  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block senders unclaimed "${CLAIM_KEYS[@]}"
+  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block sig senders unclaimed "${CLAIM_KEYS[@]}"
   producer=$(section_json "$TMP/top" "${PRODUCER_KEYS[@]}")
   run=$(run_json "$TMP/top" "$(toml_get "$TMP/top" producer_script)")
   runs_json=$(jq -n --argjson r "$run" '[$r]')
@@ -198,7 +198,7 @@ pv() { jq -r --arg k "$1" '.[$k]' <<<"$producer"; }
 # A sender's transactions are only re-derivable from a fixed block, since the
 # addresses they create follow its nonce there; and only a run given rpc_env
 # forks at a block this tool sets.
-while IFS=$'\x1f' read -r script rpc_env fork_block senders bad_sender; do
+while IFS=$'\x1f' read -r script rpc_env fork_block senders bad_sender sig; do
   [[ -n "$script" ]] || die "config: every run needs a script (producer_script in a flat claim)"
   [[ -z "$rpc_env" || "$rpc_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
     || die "config: rpc_env must name an environment variable: $rpc_env"
@@ -207,8 +207,11 @@ while IFS=$'\x1f' read -r script rpc_env fork_block senders bad_sender; do
   [[ -z "$fork_block" || -n "$rpc_env" ]] || die "config: fork_block needs rpc_env, the chain it forks"
   [[ "$senders" == 0 || -n "$fork_block" ]] || die "config: senders needs fork_block"
   [[ -z "$bad_sender" ]] || die "config: senders must be addresses: $bad_sender"
+  # Passed to `forge script --sig`, so it cannot start with `-`.
+  [[ -z "$sig" || "$sig" =~ ^[A-Za-z_][A-Za-z0-9_]*\(([A-Za-z0-9_]+(,[A-Za-z0-9_]+)*)?\)$ ]] \
+    || die "config: sig must be a function signature such as execute(): $sig"
 done < <(jq -r '.[] | [.script, .rpc_env, .fork_block, (.senders | length),
-    (first(.senders[] | select(test("^0x[0-9a-fA-F]{40}$") | not)) // "")] | join("\u001f")' <<<"$runs_json")
+    (first(.senders[] | select(test("^0x[0-9a-fA-F]{40}$") | not)) // ""), .sig] | join("\u001f")' <<<"$runs_json")
 
 # safe_ui_prefix and safe_tx_service_url end up in links and requests, and on a
 # fork PR the config is the attacker's.
@@ -222,6 +225,14 @@ while IFS=$'\x1f' read -r path live prefix service; do
   [[ -z "$service" || "$service" =~ ^https?://[A-Za-z0-9.:/_-]+$ ]] \
     || die "config: safe_tx_service_url must be a plain http(s) URL: $service"
 done < <(jq -r '.[] | [.output_path, .live, .safe_ui_prefix, .safe_tx_service_url] | join("\u001f")' <<<"$claims_json")
+
+# A Zeus run's calls are the ones that succeed, so another block or an RPC-less
+# run could drop a call. It also yields one Safe transaction, not several.
+bad=$(jq -r '. as $m | [$m.claims | to_entries[] | select(.value.input_format == "zeus-traces")
+    | .value.run as $r | $m.runs[$r] as $run
+    | select(($run.rpc_env == "" or $run.fork_block == "") or ([$m.claims[] | select(.run == $r)] | length) != 1)
+    | .value.output_path] | first // empty' <<<"$(jq -n --argjson runs "$runs_json" --argjson claims "$claims_json" '{runs: $runs, claims: $claims}')")
+[[ -z "$bad" ]] || die "config: a zeus-traces claim needs a run with rpc_env and fork_block, and is its run's only claim: $bad"
 
 # Two claims on one file, or a claimed file also listed as unclaimed, would each
 # be attested or excused by the other.

@@ -79,3 +79,16 @@ Transaction Builder 1.18.3 and 2.1.0 encoder helpers. Their multi-call hash is p
 in `DecodedReader.t.sol`; [compatibility instructions](../../docs/producer-readers.md#version-evidence-and-reproduction)
 identify the exact source commits, package versions and tested scope. The fixture
 is not a production Safe proposal or an assertion of whole-app compatibility.
+
+## Zeus traces fixture
+
+`zeus-traces.json` is the output of `forge script --sig 'execute()' -vvvv --json`
+for eigenx-contracts' `2-acceptAdminAndSetLimits.s.sol` at `f0d751f`, forge 1.8.1,
+on a fork of Ethereum block 23443614. Only the fields the reader uses were kept
+(`success`, `raw_logs`, and per trace `parent`, `children`, `idx`, `depth`,
+`success`, `caller`, `address`, `kind`, `value`, `data`, `status`), and the
+script's creation bytecode was blanked, so forge itself would print more. The calls
+are the four of Safe `0x684c…9e09`'s executed nonce 0 transaction, whose hash
+`0x9e338be3…` both suites pin. The environment values the script read were taken
+from that transaction. Mutations in `readers-zeus.sh` and `ZeusReader.t.sol` edit
+this file, so each keeps a valid event and Safe.
