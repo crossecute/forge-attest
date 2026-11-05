@@ -4,6 +4,7 @@ pragma solidity 0.8.28;
 /// @dev Inline cheatcode surface. forge-attest's verifier has no Solidity
 ///      dependencies: no forge-std, nothing to `forge install`, nothing to drift.
 interface Vm {
+    function parseJsonBool(string calldata json, string calldata key) external view returns (bool);
     function parseJsonKeys(string calldata json, string calldata key) external pure returns (string[] memory);
     function parseJsonStringArray(string calldata json, string calldata key) external pure returns (string[] memory);
     function envString(string calldata name) external view returns (string memory);
@@ -82,6 +83,12 @@ library SafeTxLib {
         uint256 value;
         bytes data;
         uint8 operation;
+    }
+
+    struct MethodEncoding {
+        string signature;
+        string keys;
+        bytes arguments;
     }
 
     /// @dev `approveHash(bytes32)`. A Safe that owns another Safe cannot sign, so
@@ -387,6 +394,118 @@ library SafeTxLib {
         }
     }
 
+    function readDecoded(string memory json, Binding memory b, string memory profile) internal view returns (SafeTx memory) {
+        require(_is(profile, "static-v1"), "SafeTxLib: explicit static-v1 profile required");
+        require(bytes(json).length <= 1048576, "SafeTxLib: reader input exceeds 1 MiB");
+        allowKeys(json, "$", '["version","chainId","createdAt","meta","transactions"]');
+        require(_is(vm.parseJsonString(json, ".version"), "1.0"), "SafeTxLib: unsupported batch version");
+        uint256 n;
+        while (vm.keyExistsJson(json, string.concat(".transactions[", vm.toString(n), "]"))) {
+            require(n < 128, "SafeTxLib: too many decoded calls");
+            n++;
+        }
+        require(n > 0, "SafeTxLib: empty decoded batch");
+        InnerTx[] memory txs = new InnerTx[](n);
+        for (uint256 i = 0; i < n; i++) txs[i] = readDecodedInner(json, string.concat(".transactions[", vm.toString(i), "]"));
+        address declared = readSafeAddress(json);
+        require(declared == address(0) || b.safe == address(0) || declared == b.safe, "SafeTxLib: safe address mismatch");
+        if (b.safe == address(0)) b.safe = declared;
+        uint256 chain = vm.keyExistsJson(json, ".chainId") ? strictUint(json, ".chainId") : 0;
+        require(b.chainId == 0 || chain == 0 || b.chainId == chain, "SafeTxLib: chain mismatch");
+        return toSafeTx(txs, b, chain);
+    }
+
+    function readDecodedInner(string memory json, string memory at) private view returns (InnerTx memory t) {
+        t.to = vm.parseJsonAddress(json, string.concat(at, ".to"));
+        if (vm.keyExistsJson(json, string.concat(at, ".value"))) t.value = strictUint(json, string.concat(at, ".value"));
+        if (vm.keyExistsJson(json, string.concat(at, ".operation"))) t.operation = _readOperation(json, string.concat(at, ".operation"));
+        require(t.operation == 0, "SafeTxLib: static-v1 supports CALL only");
+        string memory dataPath = string.concat(at, ".data");
+        string memory raw = vm.keyExistsJson(json, dataPath) ? vm.parseJsonString(json, dataPath) : "";
+        bool carriesData = bytes(raw).length != 0 && !_is(raw, "null");
+        if (carriesData) t.data = vm.parseJsonBytes(json, dataPath);
+        string memory methodPath = string.concat(at, ".contractMethod");
+        if (!vm.keyExistsJson(json, string.concat(methodPath, ".name"))) {
+            require(nullOrMissing(json, methodPath), "SafeTxLib: invalid method descriptor");
+            string memory values = string.concat(at, ".contractInputsValues");
+            if (!nullOrMissing(json, values)) requireKeys(json, values, '[]');
+            return t;
+        }
+        bytes memory encoded = encodeDecodedMethod(json, at, t.value);
+        require(!carriesData || keccak256(t.data) == keccak256(encoded), "SafeTxLib: descriptor/data mismatch");
+        t.data = encoded;
+    }
+
+    function nullOrMissing(string memory json, string memory path) private view returns (bool) {
+        if (!vm.keyExistsJson(json, path)) return true;
+        try vm.parseJsonString(json, path) returns (string memory raw) { return _is(raw, "null"); }
+        catch { return false; }
+    }
+
+    function encodeDecodedMethod(string memory json, string memory at, uint256 value) private view returns (bytes memory) {
+        string memory method = string.concat(at, ".contractMethod");
+        requireKeys(json, method, '["inputs","name","payable"]');
+        string memory name = vm.parseJsonString(json, string.concat(method, ".name"));
+        require(validIdentifier(name) && bytes(name).length <= 64 && !_is(name, "receive") && !_is(name, "fallback"), "SafeTxLib: invalid method name");
+        bool payable_ = vm.parseJsonBool(json, string.concat(method, ".payable"));
+        require(value == 0 || payable_, "SafeTxLib: value to nonpayable method");
+        MethodEncoding memory encoding;
+        encoding.signature = string.concat(name, "(");
+        encoding.keys = "[";
+        uint256 n;
+        while (vm.keyExistsJson(json, string.concat(method, ".inputs[", vm.toString(n), "]"))) {
+            require(n < 32, "SafeTxLib: too many method inputs");
+            (string memory typ, string memory key, bytes memory argument) = readDecodedArgument(json, at, n);
+            encoding.arguments = bytes.concat(encoding.arguments, argument);
+            if (n != 0) { encoding.signature = string.concat(encoding.signature, ","); encoding.keys = string.concat(encoding.keys, ","); }
+            encoding.signature = string.concat(encoding.signature, typ);
+            encoding.keys = string.concat(encoding.keys, '"', key, '"');
+            n++;
+        }
+        if (n == 0) vm.parseJsonStringArray(json, string.concat(method, ".inputs"));
+        if (n != 0 || !nullOrMissing(json, string.concat(at, ".contractInputsValues")))
+            requireKeys(json, string.concat(at, ".contractInputsValues"), string.concat(encoding.keys, "]"));
+        return abi.encodePacked(bytes4(keccak256(bytes(string.concat(encoding.signature, ")")))), encoding.arguments);
+    }
+
+    function readDecodedArgument(string memory json, string memory at, uint256 n)
+        private view returns (string memory typ, string memory key, bytes memory argument)
+    {
+        string memory input = string.concat(at, ".contractMethod.inputs[", vm.toString(n), "]");
+        allowKeys(json, input, '["name","type","internalType"]');
+        typ = vm.parseJsonString(json, string.concat(input, ".type"));
+        key = vm.parseJsonString(json, string.concat(input, ".name"));
+        require(bytes(key).length == 0 || validIdentifier(key), "SafeTxLib: invalid input name");
+        if (bytes(key).length == 0) key = vm.toString(n);
+        argument = encodeStaticValue(json, string.concat(at, '.contractInputsValues["', key, '"]'), typ);
+    }
+
+    function encodeStaticValue(string memory json, string memory path, string memory typ) private view returns (bytes memory) {
+        string memory raw = vm.parseJsonString(json, path);
+        if (_is(typ, "address")) {
+            require(bytes(raw).length == 42, "SafeTxLib: invalid method address");
+            return abi.encode(vm.parseAddress(raw));
+        }
+        if (_is(typ, "bool")) {
+            require(_is(raw, "true") || _is(raw, "false"), "SafeTxLib: bool must be true or false");
+            return abi.encode(_is(raw, "true"));
+        }
+        require(_is(typ, "uint256") || _is(typ, "uint8"), "SafeTxLib: unsupported static-v1 type");
+        uint256 number = strictUint(json, path);
+        require(!_is(typ, "uint8") || number <= 255, "SafeTxLib: uint8 overflow");
+        return abi.encode(number);
+    }
+
+    function validIdentifier(string memory name) private pure returns (bool) {
+        bytes memory raw = bytes(name);
+        if (raw.length == 0) return false;
+        for (uint256 i = 0; i < raw.length; i++) {
+            bytes1 c = raw[i];
+            if (!((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_" || (i > 0 && c >= "0" && c <= "9"))) return false;
+        }
+        return true;
+    }
+
     function _checkType(string memory json, string memory base, uint256 i, string memory name, string memory typ) private view {
         string memory at = string.concat(base, "[", vm.toString(i), "]");
         requireKeys(json, at, '["name","type"]');
@@ -401,6 +520,10 @@ library SafeTxLib {
     function readWithFormat(string memory json, Binding memory b, string memory format, string memory profile)
         internal view returns (SafeTx memory)
     {
+        if (_is(format, "tx-builder-decoded") || (_is(profile, "static-v1") &&
+            (_is(format, "tx-builder") || ((bytes(format).length == 0 || _is(format, "auto")) && vm.keyExistsJson(json, ".transactions"))))) {
+            return readDecoded(json, b, profile);
+        }
         bool typed = vm.keyExistsJson(json, ".primaryType") || vm.keyExistsJson(json, ".types") ||
             vm.keyExistsJson(json, ".domain") || vm.keyExistsJson(json, ".message");
         if (_is(format, "safe-eip712") || ((bytes(format).length == 0 || _is(format, "auto")) && typed)) {

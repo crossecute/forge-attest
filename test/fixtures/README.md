@@ -14,7 +14,7 @@ from Solidity and `test/shell/run.sh` from bash; both assert the same hashes.
 | `tx-builder-self-binding.json` | `tx-builder` | A batch that names its own Safe via `meta.createdFromSafeAddress`, so no `--safe` is needed. Also covers a config Safe that contradicts the file. |
 | `tx-builder-zksync-era.json` | `tx-builder` | The Frax batch re-pointed at chain 324, where the canonical MultiSendCallOnly is not what Safe{Wallet} uses. Must be **refused** unless `multisend_address` is named. |
 | `tx-array.json` | `tx-array` | A bare array with no envelope, so `chainId` has to come from config. |
-| `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected**, because encoding it needs the target ABI. |
+| `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected** by the ordinary reader; descriptor encoding requires the explicit static-v1 profile. |
 | `tx-builder-delegatecall.json` | `tx-builder` | A batch with an inner `operation: 1`. Must be **rejected** under MultiSendCallOnly and accepted with an explicit `--multisend`. |
 
 ## Provenance of `tx-builder-frax-optimism.json`
@@ -61,3 +61,21 @@ zero gas/refund addresses, matching the pinned
 These are not production proposals or real signatures. Both must reproduce the
 existing pinned hash with the correct claim bindings. Negative mutations retain
 valid chain/Safe bindings so a missing binding cannot mask a hash/schema bug.
+
+## Decoded builder fixtures
+
+`tx-builder-decoded.json` is a synthetic decoded representation of the existing
+pinned transfer. It follows [EthStrat's writer](https://github.com/ethstrat/contracts/blob/e5a725c182aab8b3f34e58810a636948d85ed565/script/lib/SafeBatchLib.sol),
+including `internalType` and the producer-reported `txBuilderVersion = "2.0.1"`.
+That metadata is not an app version compatibility guarantee.
+
+`tx-builder-static-vectors.json` extends that envelope with synthetic `transfer`,
+`configure`, unnamed-input and zero-argument calls to cover all four scalar types,
+both booleans and uint8/uint256 boundary values. No claim is made that the target
+implements these synthetic functions; the tests check serialization without
+executing them. `tx-builder-static-encoded.json` records the corresponding ABI
+bytes, initially generated with cast and then matched against the original
+Transaction Builder 1.18.3 and 2.1.0 encoder helpers. Their multi-call hash is pinned
+in `DecodedReader.t.sol`; [compatibility instructions](../../docs/producer-readers.md#version-evidence-and-reproduction)
+identify the exact source commits, package versions and tested scope. The fixture
+is not a production Safe proposal or an assertion of whole-app compatibility.

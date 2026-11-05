@@ -242,8 +242,10 @@ review decides, and the pin stays a SHA.
 
 ## Supported producer formats
 
-`forge-attest` takes whatever Safe JSON your ops repo already emits. It detects the
-format automatically, or you name it with `input_format`.
+`forge-attest` reads the JSON shapes below. It detects the format automatically,
+or you name it with `input_format`. Explicit profiles select the supported
+producer variants; package names or version metadata alone do not establish
+compatibility.
 
 ### `safe-tx`: a complete transaction
 
@@ -322,6 +324,18 @@ The shape produced by the Safe UI's "export batch" and by FraxFinance's
 }
 ```
 
+### Decoded Transaction Builder calls: `static-v1`
+
+Set `input_format = "tx-builder"` and `input_profile = "static-v1"` to encode
+`contractMethod` and `contractInputsValues` entries with missing/null calldata.
+The explicit `tx-builder-decoded` format is an alias. The profile supports scalar
+`address`, `bool`, `uint8` and `uint256` arguments, including unnamed inputs;
+other types fail. It independently encodes in shell and Solidity, checks supplied
+data for contradictions, and retains the existing batch/Safe/nonce/gas rules.
+See the [decoded fixture](test/fixtures/tx-builder-decoded.json) and
+[profile limits and version comparisons](docs/producer-readers.md#decoded-transaction-builder-calls).
+The ordinary batch reader is unchanged without this opt-in.
+
 ### `tx-array`: a bare array
 
 Just the `transactions` list, with no envelope. `chain_id` then has to come from the
@@ -386,8 +400,9 @@ You can run the normaliser on its own to see what a given file folds into:
 ### Refused on purpose
 
 - **`contractMethod` with a null `data`.** UI exports can describe a call as an ABI
-  method plus input values. Encoding that requires the target ABI; rather than invent
-  calldata, `forge-attest` fails and asks for an export with encoded `data`.
+  method descriptor plus input values. The ordinary reader requires encoded `data`;
+  opt into `static-v1` for its documented scalar types. The descriptor supplies
+  the ABI fragment, so no external ABI file is needed for that supported subset.
 - **Inner `operation: 1` under `MultiSendCallOnly`.** That contract reverts on
   delegatecalls, so the batch could never execute. Pass the plain MultiSend via
   `multisend_address` if you really mean it.
@@ -758,7 +773,8 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   commit, so pin one you have reviewed.
 - Safe contract versions `< 1.3.0` in the offline deriver (checks #3/#4). The live
   check (#5) still handles them via `safe-tx-hashes-util`.
-- Batch entries expressed as `contractMethod` plus inputs with no encoded calldata.
+- Batch entries expressed as `contractMethod` plus inputs with no encoded calldata,
+  except the explicit `static-v1` profile described above.
   These are refused rather than guessed at.
 - Whether a nested approval will still be valid when it executes. The parent's nonce
   can move at any time, and only the live check can notice.
@@ -830,6 +846,8 @@ forge-attest/
 ├── SECURITY.md                   # how to report a vulnerability
 ├── lib/
 │   ├── normalize.sh              # any supported JSON -> canonical SafeTx (check #2)
+│   ├── readers.sh                # typed-data, service and decoded-builder profiles
+│   ├── safe-tx-types.json        # shell validation/signing schema
 │   ├── nested.sh                 # constructs a child Safe's approveHash tx
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)

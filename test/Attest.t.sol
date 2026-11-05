@@ -17,6 +17,8 @@ import {Vm, SafeTxLib} from "./SafeTx.sol";
 ///
 ///         Inputs come from env (set by attest.sh):
 ///           ATTEST_JSON                    path to the producer's JSON, under ./out
+///           ATTEST_INPUT_FORMAT            explicit reader, or auto
+///           ATTEST_INPUT_PROFILE           named producer/encoding profile
 ///           ATTEST_EXPECTED_SAFE_TX_HASH   the hash to assert against
 ///           ATTEST_SAFE                    Safe address       (batch and call formats)
 ///           ATTEST_NONCE                   Safe nonce         (batch and call formats)

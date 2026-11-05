@@ -79,3 +79,10 @@ an explicit chain binding if missing. Only opt into the pinned `safe-utils`
 profile when its documented omissions apply. Do not use a downloaded service
 response as the producer artifact or infer a nonce. Both hash aliases are checked
 if present; see `docs/producer-readers.md`.
+
+For decoded Transaction Builder entries, opt into `input_profile = "static-v1"`
+with `input_format = "tx-builder"` (or its `tx-builder-decoded` alias). Check that
+the descriptor uses only the supported address/bool/uint8/uint256 scalar types.
+Do not choose a profile from `meta.txBuilderVersion` alone. Unsupported types
+need producer-encoded calldata; see `docs/producer-readers.md` for the exact
+version evidence, input limits and mismatch rules.

@@ -1,0 +1,111 @@
+{
+  "version": "1.0",
+  "chainId": "1",
+  "createdAt": 1760128999000,
+  "meta": {
+    "name": "Transactions Batch",
+    "description": "",
+    "createdFromSafeAddress": "0x111CEEee040739fD91D29C34C33E6B3E112F2177",
+    "txBuilderVersion": "2.0.1"
+  },
+  "transactions": [
+    {
+      "to": "0x000000000000000000000000000000000000bEEF",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "name": "to",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "name": "transfer",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "to": "0x000000000000000000000000000000000000dEaD",
+        "amount": "1000000"
+      }
+    },
+    {
+      "to": "0x000000000000000000000000000000000000bEEF",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "name": "who",
+            "type": "address",
+            "internalType": "address"
+          },
+          {
+            "name": "enabled",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "kind",
+            "type": "uint8",
+            "internalType": "uint8"
+          },
+          {
+            "name": "limit",
+            "type": "uint256",
+            "internalType": "uint256"
+          }
+        ],
+        "name": "configure",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "who": "0x000000000000000000000000000000000000bEEF",
+        "enabled": "true",
+        "kind": "255",
+        "limit": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+      }
+    },
+    {
+      "to": "0x000000000000000000000000000000000000bEEF",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [
+          {
+            "name": "",
+            "type": "uint256",
+            "internalType": "uint256"
+          },
+          {
+            "name": "",
+            "type": "bool",
+            "internalType": "bool"
+          }
+        ],
+        "name": "unnamed",
+        "payable": false
+      },
+      "contractInputsValues": {
+        "0": "9007199254740993",
+        "1": "false"
+      }
+    },
+    {
+      "to": "0x000000000000000000000000000000000000bEEF",
+      "value": "0",
+      "data": null,
+      "contractMethod": {
+        "inputs": [],
+        "name": "ping",
+        "payable": false
+      },
+      "contractInputsValues": {}
+    }
+  ]
+}

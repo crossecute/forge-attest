@@ -20,6 +20,8 @@
 #                binding fields. Folded exactly as a one-entry tx-array, so the
 #                Safe, nonce, chainId and gas fields all come from flags.
 #
+#   tx-builder-decoded  Explicit decoded batch alias; requires --profile static-v1.
+#
 #   tx-builder   A Safe{Wallet} Transaction Builder batch. This is the shape
 #                FraxFinance's `SafeTxHelper.writeTxs` emits, and the shape the
 #                Safe UI's "export batch" gives you:
@@ -43,8 +45,8 @@
 #
 # Options:
 #   --input PATH            source JSON (required)
-#   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-array
-#   --profile NAME          safe-eip712/safe-service: safe (default) | safe-utils
+#   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array
+#   --profile NAME          safe-eip712/safe-service: safe (default) | safe-utils; tx-builder: static-v1
 #   --safe ADDR             Safe address        (required for batches and calls)
 #   --nonce N               Safe nonce          (required for batches and calls)
 #   --chain-id N            chain id            (required if absent from JSON)
@@ -193,11 +195,11 @@ if [[ "$FORMAT" == "auto" ]]; then
   elif [[ "$root_type" == "object" && -n "$(jget '.to')" ]]; then
     if binds_safe_tx; then FORMAT="safe-tx"; else FORMAT="call"; fi
   else
-    die "cannot detect input format; pass --format safe-tx|safe-eip712|safe-service|call|tx-builder|tx-array"
+    die "cannot detect input format; pass --format safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array"
   fi
 fi
 
-case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
+case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
 if [[ "$FORMAT" == "safe-eip712" ]]; then
@@ -206,6 +208,9 @@ if [[ "$FORMAT" == "safe-eip712" ]]; then
 elif [[ "$FORMAT" == "safe-service" ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_service
+elif [[ "$FORMAT" == "tx-builder-decoded" || ( "$FORMAT" == "tx-builder" && "$PROFILE" == static-v1 ) ]]; then
+  source "$NORMALIZE_DIR/readers.sh"
+  reader_decoded
 elif [[ -n "$PROFILE" ]]; then
   die "--profile is not supported for $FORMAT"
 fi
@@ -276,9 +281,8 @@ else
   tx_count=$(printf '%s' "$batch_json" | jq 'length')
   (( tx_count > 0 )) || die "batch contains no transactions"
 
-  # A UI-exported batch may describe a call as an ABI method + inputs with a null
-  # `data`. Encoding that needs the target ABI, which is out of scope, so refuse
-  # rather than silently attest an empty calldata.
+  # Descriptor encoding requires the explicit static-v1 profile. The ordinary
+  # reader must not turn a method without calldata into an empty call.
   for (( i = 0; i < tx_count; i++ )); do
     m=$(printf '%s' "$batch_json" | jq -r ".[$i].method // empty")
     d=$(printf '%s' "$batch_json" | jq -r ".[$i].data")
