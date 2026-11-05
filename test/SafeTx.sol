@@ -15,6 +15,7 @@ interface Vm {
     function parseJsonAddress(string calldata json, string calldata key) external view returns (address);
     function parseJsonUint(string calldata json, string calldata key) external view returns (uint256);
     function parseJsonBytes(string calldata json, string calldata key) external view returns (bytes memory);
+    function parseJsonBytes32(string calldata json, string calldata key) external view returns (bytes32);
     function parseJsonUintArray(string calldata json, string calldata key) external view returns (uint256[] memory);
     function parseJsonString(string calldata json, string calldata key) external view returns (string memory);
     function parseBytes32(string calldata value) external pure returns (bytes32);
@@ -517,9 +518,125 @@ library SafeTxLib {
         return keccak256(bytes(a)) == keccak256(bytes(b));
     }
 
+    // ------------------------------------------------------------- zeus-traces
+
+    bytes32 internal constant ZEUS_REQUIRE_MULTISIG = keccak256("ZeusRequireMultisig(address,uint8)");
+    address internal constant ZEUS_VM_ADDRESS = 0x7109709ECfa91a80626fF3989D68f67F5b1DD12D;
+
+    /// @notice The calls a Zeus MultisigBuilder script makes as its multisig, from
+    ///         `forge script --json` output. Independent of `reader_zeus` in
+    ///         lib/readers.sh: it walks the entry call's `children` where the shell
+    ///         filters on `parent`, and the two must select the same calls.
+    function readZeus(string memory json, Binding memory b, string memory profile) internal view returns (SafeTx memory) {
+        require(bytes(json).length <= 8388608, "SafeTxLib: zeus-traces input exceeds 8 MiB");
+        require(bytes(profile).length == 0, "SafeTxLib: zeus-traces has no profiles");
+        require(!b.forceMultiSend, "SafeTxLib: zeus-traces sends a single call directly");
+        require(vm.parseJsonBool(json, ".success"), "SafeTxLib: forge script did not succeed");
+
+        string memory base = _zeusExecutionArena(json);
+        string memory root = string.concat(base, "[0]");
+        require(_is(vm.parseJsonString(json, string.concat(root, ".trace.kind")), "CALL"), "SafeTxLib: malformed entry call");
+        require(vm.parseJsonBool(json, string.concat(root, ".trace.success")), "SafeTxLib: malformed entry call");
+        (address safe, uint8 callType) = _zeusEvent(json, vm.parseJsonAddress(json, string.concat(root, ".trace.address")));
+
+        require(b.safe == address(0) || b.safe == safe, "SafeTxLib: safe address mismatch");
+        b.safe = safe;
+
+        InnerTx[] memory txs = _zeusCalls(json, base, safe, callType);
+        require(txs.length == 1 || b.multiSend != address(0), "SafeTxLib: zeus-traces needs an explicit multisend_address");
+        return toSafeTx(txs, b, 0);
+    }
+
+    function _zeusCalls(string memory json, string memory base, address safe, uint8 callType)
+        private view returns (InnerTx[] memory txs)
+    {
+        string memory children = string.concat(base, "[0].children");
+        require(vm.keyExistsJson(json, string.concat(children, "[0]")), "SafeTxLib: the script made no calls as the multisig");
+        uint256[] memory ids = vm.parseJsonUintArray(json, children);
+        txs = new InnerTx[](ids.length);
+        uint256 n;
+        for (uint256 i = 0; i < ids.length; i++) {
+            string memory at = string.concat(base, "[", vm.toString(ids[i]), "].trace");
+            if (_zeusSkips(json, at, safe)) continue;
+            txs[n++] = InnerTx({
+                to: vm.parseJsonAddress(json, string.concat(at, ".address")),
+                value: _hexValue(vm.parseJsonString(json, string.concat(at, ".value"))),
+                data: vm.parseJsonBytes(json, string.concat(at, ".data")),
+                operation: callType
+            });
+        }
+        require(n > 0, "SafeTxLib: the script made no calls as the multisig");
+        assembly {
+            mstore(txs, n)
+        }
+    }
+
+    /// @dev True for reads and cheatcode calls, which are not part of the Safe
+    ///      transaction. Anything else must be a successful CALL made as the multisig.
+    function _zeusSkips(string memory json, string memory at, address safe) private view returns (bool) {
+        string memory kind = vm.parseJsonString(json, string.concat(at, ".kind"));
+        if (_is(kind, "STATICCALL")) return true;
+        require(_is(kind, "CALL"), "SafeTxLib: the script makes a call other than CALL");
+        if (vm.parseJsonAddress(json, string.concat(at, ".address")) == ZEUS_VM_ADDRESS) return true;
+        require(vm.parseJsonAddress(json, string.concat(at, ".caller")) == safe, "SafeTxLib: call not made by the multisig");
+        require(vm.parseJsonBool(json, string.concat(at, ".success")), "SafeTxLib: call reverted");
+        return false;
+    }
+
+    function _zeusExecutionArena(string memory json) private view returns (string memory base) {
+        uint256 blocks;
+        for (uint256 i = 0; vm.keyExistsJson(json, string.concat(".traces[", vm.toString(i), "]")); i++) {
+            string memory at = string.concat(".traces[", vm.toString(i), "]");
+            if (_is(vm.parseJsonString(json, string.concat(at, "[0]")), "Execution")) {
+                blocks++;
+                base = string.concat(at, "[1].arena");
+            }
+        }
+        require(blocks == 1, "SafeTxLib: expected exactly one Execution trace block");
+    }
+
+    function _zeusEvent(string memory json, address script) private view returns (address safe, uint8 callType) {
+        uint256 found;
+        for (uint256 i = 0; vm.keyExistsJson(json, string.concat(".raw_logs[", vm.toString(i), "]")); i++) {
+            string memory at = string.concat(".raw_logs[", vm.toString(i), "]");
+            if (!vm.keyExistsJson(json, string.concat(at, ".topics[0]"))) continue;
+            if (vm.parseJsonBytes32(json, string.concat(at, ".topics[0]")) != ZEUS_REQUIRE_MULTISIG) continue;
+            found++;
+            require(vm.parseJsonAddress(json, string.concat(at, ".address")) == script, "SafeTxLib: ZeusRequireMultisig not emitted by the script");
+            require(!vm.keyExistsJson(json, string.concat(at, ".topics[1]")), "SafeTxLib: malformed ZeusRequireMultisig event");
+            bytes memory data = vm.parseJsonBytes(json, string.concat(at, ".data"));
+            require(data.length == 64, "SafeTxLib: malformed ZeusRequireMultisig event");
+            uint256 kind;
+            (safe, kind) = abi.decode(data, (address, uint256));
+            require(kind <= 1, "SafeTxLib: callType must be 0 or 1");
+            callType = uint8(kind);
+        }
+        require(found == 1, "SafeTxLib: expected exactly one ZeusRequireMultisig event");
+        require(safe != address(0), "SafeTxLib: the multisig must not be the zero address");
+    }
+
+    /// @dev A call value as a hex quantity, limited to the exact range of a
+    ///      JavaScript number because the Zeus CLI converts it through one.
+    function _hexValue(string memory s) private pure returns (uint256 v) {
+        bytes memory r = bytes(s);
+        require(r.length >= 3 && r[0] == "0" && r[1] == "x", "SafeTxLib: malformed call value");
+        for (uint256 i = 2; i < r.length; i++) {
+            v = v * 16 + _hexDigit(r[i]);
+            require(v <= 9007199254740991, "SafeTxLib: call value exceeds the exact range of a JavaScript number");
+        }
+    }
+
+    function _hexDigit(bytes1 c) private pure returns (uint256) {
+        if (c >= "0" && c <= "9") return uint8(c) - 48;
+        if (c >= "a" && c <= "f") return uint8(c) - 87;
+        if (c >= "A" && c <= "F") return uint8(c) - 55;
+        revert("SafeTxLib: malformed call value");
+    }
+
     function readWithFormat(string memory json, Binding memory b, string memory format, string memory profile)
         internal view returns (SafeTx memory)
     {
+        if (_is(format, "zeus-traces")) return readZeus(json, b, profile);
         if (_is(format, "tx-builder-decoded") || (_is(profile, "static-v1") &&
             (_is(format, "tx-builder") || ((bytes(format).length == 0 || _is(format, "auto")) && vm.keyExistsJson(json, ".transactions"))))) {
             return readDecoded(json, b, profile);
