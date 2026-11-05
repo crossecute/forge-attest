@@ -29,7 +29,8 @@ reader_cross() { # fixture, format, profile, extra normalize flags...
   if ATTEST_JSON=out/reader-input.json ATTEST_INPUT_FORMAT="$format" ATTEST_INPUT_PROFILE="$profile" \
      ATTEST_EXPECTED_SAFE_TX_HASH="$hash" ATTEST_SAFE="$(jq -r .safe "$canonical")" \
      ATTEST_CHAIN_ID="$(jq -r .chainId "$canonical")" ATTEST_NONCE="$(jq -r .nonce "$canonical")" \
-     ATTEST_FORCE_MULTISEND="$force" ATTEST_GAS_PRICE="$(jq -r .gasPrice "$canonical")" \
+     ATTEST_FORCE_MULTISEND="$force" ATTEST_MULTISEND="${READER_MULTISEND:-}" ATTEST_SAFE_VERSION="${READER_SAFE_VERSION:-}" \
+     ATTEST_GAS_PRICE="$(jq -r .gasPrice "$canonical")" \
      ATTEST_SAFE_TX_GAS="$(jq -r .safeTxGas "$canonical")" ATTEST_BASE_GAS="$(jq -r .baseGas "$canonical")" \
      ATTEST_GAS_TOKEN="$(jq -r .gasToken "$canonical")" ATTEST_REFUND_RECEIVER="$(jq -r .refundReceiver "$canonical")" \
      forge test --root "$ROOT" --match-contract AttestTest -q >"$TMP/cross.log" 2>&1; then
