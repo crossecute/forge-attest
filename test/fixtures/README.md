@@ -12,6 +12,7 @@ from Solidity and `test/shell/run.sh` from bash; both assert the same hashes.
 | `tx-builder-frax-optimism-restamped.json` | `tx-builder` | The *same* batch with a different `createdAt` and `meta`, reordered keys, lowercased addresses, uppercased hex, and numbers where the original had quoted strings. Must normalise to identical bytes. |
 | `tx-builder-single.json` | `tx-builder` | A one-transaction batch with `"data": null`, a plain ETH transfer. Exercises the "do not wrap a single transaction" path. |
 | `tx-builder-self-binding.json` | `tx-builder` | A batch that names its own Safe via `meta.createdFromSafeAddress`, so no `--safe` is needed. Also covers a config Safe that contradicts the file. |
+| `tx-builder-etherfi-binding.json` | `tx-builder` | Synthetic batch using the existing self-binding fixture's calls with ether.fi's `chainId`, `safeAddress`, `meta.txBuilderVersion` and `transactions` envelope. Tests absent, agreeing and conflicting config bindings. |
 | `tx-builder-zksync-era.json` | `tx-builder` | The Frax batch re-pointed at chain 324, where the canonical MultiSendCallOnly is not what Safe{Wallet} uses. Must be **refused** unless `multisend_address` is named. |
 | `tx-array.json` | `tx-array` | A bare array with no envelope, so `chainId` has to come from config. |
 | `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected** by the ordinary reader; descriptor encoding requires the explicit static-v1 profile. |
@@ -79,3 +80,12 @@ Transaction Builder 1.18.3 and 2.1.0 encoder helpers. Their multi-call hash is p
 in `DecodedReader.t.sol`; [compatibility instructions](../../docs/producer-readers.md#version-evidence-and-reproduction)
 identify the exact source commits, package versions and tested scope. The fixture
 is not a production Safe proposal or an assertion of whole-app compatibility.
+
+## ether.fi binding variant
+
+`tx-builder-etherfi-binding.json` is synthetic, not copied from a production
+proposal. Its envelope follows [`Utils.generateSafeJson`](https://github.com/etherfi-protocol/smart-contracts/blob/15ff96d4d5e8e6a19a472cd40a7bcb858c9e7a88/script/utils/utils.sol#L735-L798).
+The transaction list is reused from `tx-builder-self-binding.json` so the pinned
+hash stays the same. The writer hard-codes `meta.txBuilderVersion = "1.16.5"`;
+that string does not establish compatibility with that app release. The fixture
+has no top-level `version`, matching this writer.

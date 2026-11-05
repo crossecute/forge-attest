@@ -151,17 +151,27 @@ assert_eq "multiSend payload length is 6 * 249 bytes" \
 
 group "normalize.sh: a batch that binds itself"
 
-# The Transaction Builder schema has a slot for the Safe a batch was built for.
-# When a producer fills it in, --safe stops being a required input.
-assert_eq "the Safe is taken from meta.createdFromSafeAddress" \
-  "$(bash "$NORMALIZE" --input "$FIX/tx-builder-self-binding.json" --nonce 42 | jq -r .safe)" \
-  "${SAFE,,}"
-assert_eq "a config Safe that agrees is accepted" \
-  "$(normalize tx-builder-self-binding.json | jq -r .safe)" "${SAFE,,}"
-assert_contains "a config Safe that contradicts the file is rejected" \
-  "$(bash "$NORMALIZE" --input "$FIX/tx-builder-self-binding.json" --nonce 42 \
-       --safe 0x000000000000000000000000000000000000b0b0 2>&1 >/dev/null)" \
-  "safe address mismatch"
+for fixture in tx-builder-self-binding.json tx-builder-etherfi-binding.json; do
+  assert_eq "$fixture supplies the Safe without config" \
+    "$(bash "$NORMALIZE" --input "$FIX/$fixture" --nonce 42 | jq -r .safe)" "${SAFE,,}"
+  assert_eq "$fixture accepts agreeing config" \
+    "$(normalize "$fixture" | jq -r .safe)" "${SAFE,,}"
+  assert_contains "$fixture rejects conflicting config" \
+    "$(bash "$NORMALIZE" --input "$FIX/$fixture" --nonce 42 \
+         --safe 0x000000000000000000000000000000000000b0b0 2>&1 >/dev/null)" \
+    "safe address mismatch"
+done
+jq '.safe = (.safeAddress | ascii_downcase) | .meta.createdFromSafeAddress = .safeAddress' \
+  "$FIX/tx-builder-etherfi-binding.json" >"$TMP/agreeing-safe.json"
+assert_eq "all Safe declarations agree regardless of address casing" \
+  "$(bash "$NORMALIZE" --input "$TMP/agreeing-safe.json" --nonce 42 | jq -r .safe)" "${SAFE,,}"
+for safe_path in '["safe"]' '["safeAddress"]' '["meta","createdFromSafeAddress"]'; do
+  jq --argjson path "$safe_path" 'setpath($path; "0x000000000000000000000000000000000000b0b0")' \
+    "$TMP/agreeing-safe.json" >"$TMP/conflicting-safe.json"
+  assert_contains "conflicting $safe_path declaration is rejected without config" \
+    "$(bash "$NORMALIZE" --input "$TMP/conflicting-safe.json" --nonce 42 2>&1 >/dev/null)" \
+    "safe address mismatch"
+done
 assert_contains "a file declaring no Safe still needs one" \
   "$(bash "$NORMALIZE" --input "$FIX/tx-builder-frax-optimism.json" --nonce 42 2>&1 >/dev/null)" \
   "no Safe address"
@@ -304,6 +314,7 @@ cross_check "bare transaction array"          tx-array.json --chain-id 1
 cross_check "plain call"                      call.json --chain-id 1
 cross_check "plain call, forced multiSend"    call.json --chain-id 1 --batch-mode multisend
 cross_check "batch declaring its own Safe"    tx-builder-self-binding.json
+cross_check "ether.fi Safe binding"           tx-builder-etherfi-binding.json
 cross_check "non-zero gas fields from config" tx-builder-frax-optimism.json --gas-price 1000 --safe-tx-gas 50000
 cross_check "Safe 1.4.1 MultiSendCallOnly"    tx-builder-frax-optimism.json --safe-version 1.4.1
 cross_check "explicit MultiSend, inner delegatecall" \

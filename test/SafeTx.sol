@@ -603,14 +603,17 @@ library SafeTxLib {
 
     /// @notice The Safe a batch says it was built for, or address(0) if it doesn't
     ///         say. The Transaction Builder schema's slot for this is
-    ///         `meta.createdFromSafeAddress`; producers that fill it in make the
-    ///         file self-binding, and the configured Safe becomes a cross-check.
-    function readSafeAddress(string memory json) internal view returns (address) {
-        if (vm.keyExistsJson(json, ".safe")) return vm.parseJsonAddress(json, ".safe");
-        if (vm.keyExistsJson(json, ".meta.createdFromSafeAddress")) {
-            return vm.parseJsonAddress(json, ".meta.createdFromSafeAddress");
+    ///         `meta.createdFromSafeAddress`; ether.fi uses `safeAddress`.
+    function readSafeAddress(string memory json) internal view returns (address declared) {
+        string[3] memory keys = [".safe", ".safeAddress", ".meta.createdFromSafeAddress"];
+        bool found;
+        for (uint256 i = 0; i < keys.length; i++) {
+            if (!vm.keyExistsJson(json, keys[i])) continue;
+            address candidate = vm.parseJsonAddress(json, keys[i]);
+            require(!found || declared == candidate, "SafeTxLib: safe address mismatch between JSON declarations");
+            declared = candidate;
+            found = true;
         }
-        return address(0);
     }
 
     /// @notice Read any supported shape and fold it into the SafeTx to be signed.

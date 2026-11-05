@@ -6,11 +6,10 @@
 #
 #   ./attest.sh --config attest.batch.toml
 #
-# The difference from a flat SafeTx claim is that a batch carries no Safe address,
-# no nonce and no gas fields. Those are supplied here, and they are *inputs to the
-# hash*. The same batch signs as a different transaction on a different Safe, or
-# at a different nonce. Getting them wrong produces a hash mismatch, not a silent
-# pass.
+# A batch may omit the Safe address and carries no nonce or gas fields. Supply
+# missing bindings here; they are *inputs to the hash*. The same batch signs as a
+# different transaction on a different Safe or at a different nonce. Getting them
+# wrong produces a hash mismatch, not a silent pass.
 
 # --- Producer -------------------------------------------------------------------
 producer_repo   = "https://github.com/crossecute/forge-attest-example-safe-ops"
