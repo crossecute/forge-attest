@@ -276,6 +276,18 @@ the pinned safe-utils producer. Both reject incomplete signed transactions and
 conflicting claim bindings. Integers above JavaScript's exact numeric range must
 be decimal strings. This does not parse console output or hash-only signing data.
 
+### `safe-service`: an exported proposal request
+
+Read a full request written by the producer, with an independently supplied
+`chain_id` if absent. The default `input_profile = "safe"` requires the Safe and
+all signed fields. The explicit `safe-utils` profile permits the omitted Safe
+and two zero gas/refund addresses from the pinned writer; it requires zero gas
+fields and claim Safe/chain bindings. Every carried `contractTransactionHash` or
+`safeTxHash` must match both local derivations. See the
+[request fixture](test/fixtures/safe-service.json) and
+[profile requirements](docs/producer-readers.md#exported-safe-service-requests).
+This reads an exported request, not a live service response.
+
 ### `call`: just the call
 
 An object with the call and none of the `SafeTx` binding fields:
