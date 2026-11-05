@@ -510,7 +510,7 @@ So `safe_address` and `safe_nonce` in `attest.toml` are *inputs to the hash* for
 batch and call formats, not just live-check settings. The same batch on a different Safe, or
 at a different nonce, is a different transaction and will not match a pin.
 
-A batch can declare the Safe through `meta.createdFromSafeAddress`, top-level
+An encoded batch can declare the Safe through `meta.createdFromSafeAddress`, top-level
 `safe`, or ether.fi's top-level `safeAddress`. `forge-attest` reads all three and
 requires every declaration to agree. A producer that declares its Safe makes the
 file self-binding, so `safe_address` becomes an independent cross-check rather
