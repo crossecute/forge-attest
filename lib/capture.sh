@@ -14,6 +14,16 @@ capture_request() {
   while (( $# )); do
     case "$1" in
       -s|--silent|-S|-sS) shift ;;
+      # safe-utils asks solidity-http to follow redirects. Nothing is sent, so
+      # these change nothing here; the values are still checked.
+      -L|--location) shift ;;
+      --max-redirs|--proto)
+        (( $# >= 2 )) || capture_error "missing curl option value"
+        case "$1:$2" in
+          --max-redirs:[0-9]|--max-redirs:[0-9][0-9]|--proto:=https) ;;
+          *) capture_error "unsupported curl option value" ;;
+        esac
+        shift 2 ;;
       -X|--request|-d|--data|-w|--write-out|-H|--header)
         (( $# >= 2 )) || capture_error "missing curl option value"
         case "$1" in

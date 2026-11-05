@@ -73,6 +73,19 @@ reject_request() {
   prepare "$name"
   if request "$name" "$@" >/dev/null 2>&1; then fail "$name"; else pass "$name"; fi
 }
+# solidity-http adds these when safe-utils follows redirects, which every released
+# safe-utils does. A fork without it, such as M0's, never sends them.
+prepare redirects
+assert_eq 'follow-redirects options are accepted' \
+  "$(request redirects -s -w '\n%{http_code}' -H 'Content-Type: application/json' -X POST -d "$BODY" -L --max-redirs 3 --proto =https "$URL")" \
+  $'{}\n201'
+assert_eq 'the redirect options leave the captured bytes alone' "$(cat "$TMP/redirects/0.json")" "$BODY"
+reject_request max-redirs-text -s -w '\n%{http_code}' -X POST -d "$BODY" -L --max-redirs many "$URL"
+reject_request max-redirs-large -s -w '\n%{http_code}' -X POST -d "$BODY" --max-redirs 999 "$URL"
+reject_request proto-http -s -w '\n%{http_code}' -X POST -d "$BODY" --proto =http "$URL"
+reject_request proto-missing-value -s -w '\n%{http_code}' -X POST -d "$BODY" "$URL" --proto
+reject_request redirect-target -s -w '\n%{http_code}' -X POST -d "$BODY" -L --proto-redir =all "$URL"
+
 reject_request get -s -w '\n%{http_code}' -X GET "$URL"
 reject_request upload -s -w '\n%{http_code}' -X POST --upload-file /etc/passwd "$URL"
 reject_request file-body -s -w '\n%{http_code}' -X POST -d @request.json "$URL"

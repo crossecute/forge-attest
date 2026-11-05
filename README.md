@@ -424,7 +424,9 @@ expected_safe_tx_hash = "0xab7012df75fc7907ace6cb632bc3865ded2956c33fa2aab2d4b3d
 The runner enables FFI and prepends a local curl interceptor only for this run.
 It captures each inline JSON POST to `/api/v1/safes/<safe>/multisig-transactions/`,
 matches its Safe and body nonce to exactly one claim, and returns a local HTTP
-201 response. Missing, duplicate or unclaimed proposals, unsupported curl options,
+201 response. It accepts the redirect options every released safe-utils sends,
+`-L --max-redirs <0-99> --proto =https`; they change nothing because no request
+leaves the machine. Missing, duplicate or unclaimed proposals, unsupported curl options,
 non-proposal routes and transport errors fail verification, even if the script
 ignores a failed request. Multiple proposals need distinct Safe/nonce bindings
 and a claim for each one. An explicit claim chain must agree with the run's RPC;
