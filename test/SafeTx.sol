@@ -606,6 +606,7 @@ library SafeTxLib {
             require(!vm.keyExistsJson(json, string.concat(at, ".topics[1]")), "SafeTxLib: malformed ZeusRequireMultisig event");
             bytes memory data = vm.parseJsonBytes(json, string.concat(at, ".data"));
             require(data.length == 64, "SafeTxLib: malformed ZeusRequireMultisig event");
+            require(uint256(bytes32(data)) >> 160 == 0, "SafeTxLib: malformed multisig address in ZeusRequireMultisig");
             uint256 kind;
             (safe, kind) = abi.decode(data, (address, uint256));
             require(kind <= 1, "SafeTxLib: callType must be 0 or 1");
