@@ -75,9 +75,9 @@ expected_safe_tx_hash     = "0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27
 
 # --- The Safe this transaction belongs to ---------------------------------------
 # For batch and call formats these are *inputs to the hash*, not just live-check
-# settings: a Transaction Builder export or a bare call carries no Safe address
-# and no nonce, so the same batch signs differently on a different Safe or at a
-# different nonce. Supplying them here is what binds it to one transaction.
+# settings: a batch may omit the Safe address, and a bare call omits it. Neither
+# carries a nonce. The same calls sign differently on a different Safe or at a
+# different nonce. Supply any missing binding here.
 #
 # `safe_network` additionally enables the live comparison against the Safe
 # Transaction Service. Leave it blank to skip that check (under --require-live,

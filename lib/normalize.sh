@@ -27,7 +27,7 @@
 #                Safe UI's "export batch" gives you:
 #                  { version, chainId, createdAt, meta, transactions: [
 #                      { to, value?, data?, operation? }, ... ] }
-#                A batch carries no Safe address, nonce or gas fields, so those
+#                A batch may declare a Safe address. Nonce and gas fields
 #                must be supplied via flags. Multi-transaction batches are packed
 #                into a single `multiSend(bytes)` delegatecall exactly as the Safe
 #                UI does, which is what the owners actually sign.
@@ -52,7 +52,7 @@
 #   --input PATH            source JSON (required)
 #   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array | zeus-traces
 #   --profile NAME          safe-eip712/safe-service: safe (default) | safe-utils; tx-builder: static-v1
-#   --safe ADDR             Safe address        (required for batches and calls)
+#   --safe ADDR             Safe address        (required if absent from JSON)
 #   --nonce N               Safe nonce          (required for batches and calls)
 #   --chain-id N            chain id            (required if absent from JSON)
 #   --safe-version V        Safe contract version, default 1.3.0
@@ -160,15 +160,15 @@ norm_uint() {
   printf '%s' "$n"
 }
 
-# Config vs JSON reconciliation: both may supply a value, but they must agree.
+# Reconcile JSON with another declaration or config; supplied values must agree.
 # Silently preferring one over the other would hide exactly the tampering this
 # tool exists to detect.
 reconcile() {
-  local what="$1" from_json="${2:-}" from_flag="${3:-}" jn fn
+  local what="$1" from_json="${2:-}" from_flag="${3:-}" other_source="${4:-config}" jn fn
   jn=$(lower "$from_json"); fn=$(lower "$from_flag")
   [[ "$jn" == "null" ]] && jn=""
   if [[ -n "$jn" && -n "$fn" && "$jn" != "$fn" ]]; then
-    die "$what mismatch: JSON says '$from_json' but config says '$from_flag'"
+    die "$what mismatch: JSON says '$from_json' but $other_source says '$from_flag'"
   fi
   printf '%s' "${jn:-$fn}"
 }
@@ -235,11 +235,17 @@ elif [[ "$FORMAT" == "call" ]]; then
 fi
 
 # --- gather the Safe-level binding (identical for every format) ---------------
-# A Transaction Builder file can name the Safe it was built for; the schema slot
-# is `meta.createdFromSafeAddress`. When a producer fills it in, the file binds
-# itself and --safe becomes a cross-check rather than a required input.
-json_safe=$(jget '.safe')
-[[ -n "$json_safe" ]] || json_safe=$(jget '.meta.createdFromSafeAddress')
+# Batch producers use several Safe address slots. Every declaration must agree
+# with the others and with --safe; no field takes precedence over another.
+json_safe=""
+safe_keys=('.safe' '.meta.createdFromSafeAddress')
+[[ "$FORMAT" != "tx-builder" ]] || safe_keys+=('.safeAddress')
+for safe_key in "${safe_keys[@]}"; do
+  declared_safe=$(jget "$safe_key")
+  [[ -n "$declared_safe" ]] || continue
+  declared_safe=$(norm_addr "$declared_safe")
+  json_safe=$(reconcile "safe address" "$json_safe" "$declared_safe" "another JSON declaration")
+done
 safe=$(reconcile "safe address" "$json_safe" "$SAFE")
 nonce=$(reconcile "nonce" "$(jget '.nonce')" "$NONCE")
 chain_id=$(reconcile "chainId" "$(jget '.chainId')" "$CHAIN_ID")

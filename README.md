@@ -530,9 +530,10 @@ config.
 
 ### What a batch does *not* tell you
 
-A batch (and a `call`) carries no Safe address, no nonce and no gas fields. **It is not yet a
-transaction.** It becomes one only when bound to a specific Safe at a specific nonce
-and folded into the single call owners actually sign:
+A batch may declare a Safe address, but a `call` does not. Neither carries a nonce
+or gas fields. **It is not yet a transaction.** It becomes one only when bound to
+a specific Safe at a specific nonce and folded into the single call owners
+actually sign:
 
 - **more than one transaction** → packed into `multiSend(bytes)` and executed as a
   `DELEGATECALL` into `MultiSendCallOnly`, exactly as Safe{Wallet} submits it.
@@ -543,11 +544,13 @@ So `safe_address` and `safe_nonce` in `attest.toml` are *inputs to the hash* for
 batch and call formats, not just live-check settings. The same batch on a different Safe, or
 at a different nonce, is a different transaction and will not match a pin.
 
-The schema does have a slot for the Safe, `meta.createdFromSafeAddress`, and
-`forge-attest` reads it. A producer that fills it in makes the file self-binding, so
-`safe_address` becomes an independent cross-check rather than a required input. If
-the two disagree, that is a tampering signal, and the run fails rather than picking
-one. Nothing carries the nonce, so that always comes from the config.
+An encoded batch can declare the Safe through `meta.createdFromSafeAddress`, top-level
+`safe`, or ether.fi's top-level `safeAddress`. `forge-attest` reads all three and
+requires every declaration to agree. A producer that declares its Safe makes the
+file self-binding, so `safe_address` becomes an independent cross-check rather
+than a required input. If the two disagree, that is a tampering signal, and the
+run fails rather than picking one. These batch schemas carry no nonce, so that
+comes from the config.
 
 The default `MultiSendCallOnly` is the canonical deployment for the configured
 `safe_version`. Versions 1.3.x, 1.4.x and 1.5.x are known. Any other version must

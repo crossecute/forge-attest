@@ -24,6 +24,27 @@ contract DecodedReaderTest is ReaderTestBase {
         _reject(_replace(json, '"amount": "1000000"', '"amount": "1000000", "extra": "1"'), "tx-builder-decoded", "static-v1");
     }
 
+    function test_DecodedAliasesRejectTopLevelSafeDeclarations() external {
+        string[3] memory formats = ["auto", "tx-builder", "tx-builder-decoded"];
+        string[2] memory keys = ["safe", "safeAddress"];
+        string[2] memory addresses = [vm.toString(SAFE), vm.toString(address(0xB0B))];
+        string memory json = _read("tx-builder-decoded.json");
+        SafeTxLib.Binding memory b;
+        b.safe = SAFE;
+        b.chainId = 1;
+        b.nonce = 42;
+        for (uint256 i = 0; i < formats.length; i++) {
+            require(SafeTxLib.hash(SafeTxLib.readWithFormat(json, b, formats[i], "static-v1")) == EXPECTED,
+                "valid decoded batch changed");
+            for (uint256 j = 0; j < keys.length; j++) {
+                for (uint256 k = 0; k < addresses.length; k++) {
+                    _reject(_replace(json, '"version":', string.concat('"', keys[j], '":"', addresses[k], '","version":')),
+                        formats[i], "static-v1");
+                }
+            }
+        }
+    }
+
     function test_RejectsValueToNonpayableMethod() external {
         _reject(_replace(_read("tx-builder-decoded.json"), '"value": "0"', '"value": "1"'), "tx-builder-decoded", "static-v1");
     }
