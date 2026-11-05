@@ -21,6 +21,7 @@ reader_cross() { # fixture, format, profile, extra normalize flags...
   local fixture="$1" format="$2" profile="$3"; shift 3
   local canonical="$TMP/reader-canonical.json" hash
   reader_normalize "$fixture" "$format" "$profile" "$canonical" "$@" || return 1
+  local force=""; [[ " $* " == *" --batch-mode multisend "* ]] && force=1
   hash=$(bash "$ROOT/lib/derive.sh" "$canonical" | sed -n 's/^SAFE_TX_HASH=//p')
   mkdir -p "$ROOT/out"
   cp "$FIX/$fixture" "$ROOT/out/reader-input.json"
@@ -28,6 +29,9 @@ reader_cross() { # fixture, format, profile, extra normalize flags...
   if ATTEST_JSON=out/reader-input.json ATTEST_INPUT_FORMAT="$format" ATTEST_INPUT_PROFILE="$profile" \
      ATTEST_EXPECTED_SAFE_TX_HASH="$hash" ATTEST_SAFE="$(jq -r .safe "$canonical")" \
      ATTEST_CHAIN_ID="$(jq -r .chainId "$canonical")" ATTEST_NONCE="$(jq -r .nonce "$canonical")" \
+     ATTEST_FORCE_MULTISEND="$force" ATTEST_GAS_PRICE="$(jq -r .gasPrice "$canonical")" \
+     ATTEST_SAFE_TX_GAS="$(jq -r .safeTxGas "$canonical")" ATTEST_BASE_GAS="$(jq -r .baseGas "$canonical")" \
+     ATTEST_GAS_TOKEN="$(jq -r .gasToken "$canonical")" ATTEST_REFUND_RECEIVER="$(jq -r .refundReceiver "$canonical")" \
      forge test --root "$ROOT" --match-contract AttestTest -q >"$TMP/cross.log" 2>&1; then
     assert_eq "$fixture independent derivation" "$(cat "$ROOT/out/solidity-safe-tx-hash.txt")" "$hash"
   else fail "$fixture independent derivation: $(cat "$TMP/cross.log")"; fi
