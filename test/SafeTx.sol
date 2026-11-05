@@ -276,6 +276,15 @@ library SafeTxLib {
     function readSignedFields(string memory json, string memory at, SafeTx memory t)
         private view returns (SafeTx memory)
     {
+        t = readSignedCore(json, at, t);
+        t.gasToken = vm.parseJsonAddress(json, string.concat(at, ".gasToken"));
+        t.refundReceiver = vm.parseJsonAddress(json, string.concat(at, ".refundReceiver"));
+        return t;
+    }
+
+    function readSignedCore(string memory json, string memory at, SafeTx memory t)
+        private view returns (SafeTx memory)
+    {
         t.to = vm.parseJsonAddress(json, string.concat(at, ".to"));
         t.value = vm.parseJsonUint(json, string.concat(at, ".value"));
         t.data = _optionalBytes(json, string.concat(at, ".data"));
@@ -283,8 +292,6 @@ library SafeTxLib {
         t.safeTxGas = vm.parseJsonUint(json, string.concat(at, ".safeTxGas"));
         t.baseGas = vm.parseJsonUint(json, string.concat(at, ".baseGas"));
         t.gasPrice = vm.parseJsonUint(json, string.concat(at, ".gasPrice"));
-        t.gasToken = vm.parseJsonAddress(json, string.concat(at, ".gasToken"));
-        t.refundReceiver = vm.parseJsonAddress(json, string.concat(at, ".refundReceiver"));
         t.nonce = vm.parseJsonUint(json, string.concat(at, ".nonce"));
         return t;
     }
@@ -347,6 +354,29 @@ library SafeTxLib {
         vm.parseJsonBytes(json, string.concat(at, ".data"));
     }
 
+    function readService(string memory json, Binding memory b, string memory profile) internal view returns (SafeTx memory t) {
+        require(bytes(json).length <= 1048576, "SafeTxLib: reader input exceeds 1 MiB");
+        bool utils = _is(profile, "safe-utils");
+        require(utils || bytes(profile).length == 0 || _is(profile, "safe"), "SafeTxLib: unknown service profile");
+        validateSignedFields(json, "");
+        t.safe = vm.keyExistsJson(json, ".safe") ? vm.parseJsonAddress(json, ".safe") : b.safe;
+        require(utils || vm.keyExistsJson(json, ".safe"), "SafeTxLib: service request missing safe");
+        t.chainId = vm.keyExistsJson(json, ".chainId") ? strictUint(json, ".chainId") : b.chainId;
+        t.safeVersion = vm.keyExistsJson(json, ".safeVersion") ? vm.parseJsonString(json, ".safeVersion") :
+            (bytes(b.safeVersion).length == 0 ? "1.3.0" : b.safeVersion);
+        t = readSignedCore(json, "", t);
+        if (!utils || vm.keyExistsJson(json, ".gasToken")) t.gasToken = vm.parseJsonAddress(json, ".gasToken");
+        if (!utils || vm.keyExistsJson(json, ".refundReceiver")) t.refundReceiver = vm.parseJsonAddress(json, ".refundReceiver");
+        require(!utils || (t.safeTxGas == 0 && t.baseGas == 0 && t.gasPrice == 0 &&
+            t.gasToken == address(0) && t.refundReceiver == address(0)), "SafeTxLib: safe-utils gas/refund fields must be zero");
+        require(t.safe != address(0) && t.chainId != 0, "SafeTxLib: missing Safe or chain");
+        require(b.safe == address(0) || b.safe == t.safe, "SafeTxLib: safe mismatch");
+        require(b.chainId == 0 || b.chainId == t.chainId, "SafeTxLib: chain mismatch");
+        if (vm.keyExistsJson(json, ".contractTransactionHash")) {
+            require(vm.parseBytes32(vm.parseJsonString(json, ".contractTransactionHash")) == hash(t), "SafeTxLib: service hash mismatch");
+        }
+    }
+
     function _checkType(string memory json, string memory base, uint256 i, string memory name, string memory typ) private view {
         string memory at = string.concat(base, "[", vm.toString(i), "]");
         requireKeys(json, at, '["name","type"]');
@@ -365,6 +395,10 @@ library SafeTxLib {
             vm.keyExistsJson(json, ".domain") || vm.keyExistsJson(json, ".message");
         if (_is(format, "safe-eip712") || ((bytes(format).length == 0 || _is(format, "auto")) && typed)) {
             return readEip712(json, b, profile);
+        }
+        bool service = vm.keyExistsJson(json, ".contractTransactionHash") || vm.keyExistsJson(json, ".safeTxHash");
+        if (_is(format, "safe-service") || ((bytes(format).length == 0 || _is(format, "auto")) && service)) {
+            return readService(json, b, profile);
         }
         require(bytes(profile).length == 0, "SafeTxLib: profile unsupported for format");
         require(bytes(format).length == 0 || _is(format, "auto") || _is(format, "safe-tx") ||

@@ -40,3 +40,39 @@ reader_size_limit() {
   size=$(wc -c <"$INPUT")
   (( size <= 1048576 )) || die "reader input exceeds 1 MiB"
 }
+
+reader_service() {
+  reader_size_limit
+  case "$PROFILE" in ""|safe|safe-utils) ;; *) die "unknown safe-service profile: $PROFILE" ;; esac
+  jq_root -e '
+    type == "object" and
+    ((keys - ["safe","chainId","safeVersion","to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce","sender","signature","origin","contractTransactionHash","safeTxHash"]) | length == 0)
+  ' >/dev/null || die "not an exported Safe service request"
+  SERVICE_HASH=$(jget .contractTransactionHash)
+  SERVICE_ALT_HASH=$(jget .safeTxHash)
+  if [[ "$PROFILE" == safe-utils ]]; then
+    J=$(jq_root -c 'if has("gasToken") then . else . + {gasToken:"0x0000000000000000000000000000000000000000"} end |
+      if has("refundReceiver") then . else . + {refundReceiver:"0x0000000000000000000000000000000000000000"} end')
+    jq_root -e '([.safeTxGas,.baseGas,.gasPrice] | all(. == "0" or . == 0)) and
+      (.gasToken | ascii_downcase == "0x0000000000000000000000000000000000000000") and
+      (.refundReceiver | ascii_downcase == "0x0000000000000000000000000000000000000000")' >/dev/null \
+      || die "safe-utils service profile requires zero gas/refund fields"
+  else
+    [[ -n "$(jget .safe)" ]] || die "service request is missing safe"
+  fi
+  local bound_safe bound_chain
+  bound_safe=$(reconcile "safe address" "$(jget .safe)" "$SAFE")
+  bound_chain=$(reconcile "chainId" "$(jget .chainId)" "$CHAIN_ID")
+  J=$(jq_root -c --arg safe "$bound_safe" --arg chain "$bound_chain" '. + {safe:$safe, chainId:$chain}')
+  reader_signed_fields
+}
+
+reader_service_hashes() {
+  local canonical="$1" derived carried
+  derived=$(bash "$NORMALIZE_DIR/derive.sh" - <<<"$canonical" | sed -n 's/^SAFE_TX_HASH=//p')
+  for carried in "$SERVICE_HASH" "$SERVICE_ALT_HASH"; do
+    [[ -n "$carried" ]] || continue
+    [[ "${carried,,}" =~ ^0x[0-9a-f]{64}$ && "${carried,,}" == "$derived" ]] \
+      || die "service transaction hash does not match the independently derived SafeTx"
+  done
+}
