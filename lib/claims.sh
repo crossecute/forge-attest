@@ -29,7 +29,7 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
-RUN_KEYS=(script rpc_env fork_block sig senders unclaimed)
+RUN_KEYS=(script rpc_env fork_block sig capture senders unclaimed)
 DEFAULT_KEYS=(input_format input_profile batch_mode safe_version multisend_address)
 CLAIM_KEYS=(output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
@@ -130,7 +130,7 @@ environment_json() {
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
       || die "config: invalid producer environment name: $key"
     case "$key" in
-      SAFE_API_KEY|PATH|IFS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|LD_*|DYLD_*|GLIBC_TUNABLES|GCONV_PATH|LIBPATH|SHLIB_PATH)
+      SAFE_API_KEY|FORGE_ATTEST_CAPTURE_*|PATH|IFS|BASH_ENV|ENV|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|LD_*|DYLD_*|GLIBC_TUNABLES|GCONV_PATH|LIBPATH|SHLIB_PATH)
         die "config: reserved producer environment name: $key" ;;
     esac
     grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"" "$file" \
@@ -147,13 +147,13 @@ run_json() {
   u=$(array_json "$1" unclaimed)
   while IFS= read -r p; do rel_path unclaimed "$p"; done < <(jq -r '.[]' <<<"$u")
   s=$(array_json "$1" senders)
-  section_json "$1" rpc_env fork_block sig | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
+  section_json "$1" rpc_env fork_block sig capture | jq -c --arg script "$2" --argjson s "$s" --argjson u "$u" \
     --argjson env "$(environment_json "$1.env")" \
     '{script: $script} + . + {env: $env, senders: $s, unclaimed: $u}'
 }
 
 if [[ "$layout" == flat ]]; then
-  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block sig senders unclaimed "${CLAIM_KEYS[@]}"
+  check_section "$TMP/top" "the claim" "${PRODUCER_KEYS[@]}" producer_script rpc_env fork_block sig capture senders unclaimed "${CLAIM_KEYS[@]}"
   producer=$(section_json "$TMP/top" "${PRODUCER_KEYS[@]}")
   run=$(run_json "$TMP/top" "$(toml_get "$TMP/top" producer_script)")
   runs_json=$(jq -n --argjson r "$run" '[$r]')
@@ -212,6 +212,21 @@ while IFS=$'\x1f' read -r script rpc_env fork_block senders bad_sender sig; do
     || die "config: sig must be a function signature such as execute(): $sig"
 done < <(jq -r '.[] | [.script, .rpc_env, .fork_block, (.senders | length),
     (first(.senders[] | select(test("^0x[0-9a-fA-F]{40}$") | not)) // ""), .sig] | join("\u001f")' <<<"$runs_json")
+
+while IFS=$'\x1f' read -r capture rpc_env fork_block; do
+  [[ -z "$capture" || "$capture" == safe-utils ]] || die "config: unknown capture mode: $capture"
+  [[ -z "$capture" || ( -n "$rpc_env" && -n "$fork_block" ) ]] \
+    || die "config: safe-utils capture needs rpc_env and fork_block"
+done < <(jq -r '.[] | [.capture, .rpc_env, .fork_block] | join("\u001f")' <<<"$runs_json")
+
+capture_claims=$(jq -n --argjson runs "$runs_json" --argjson claims "$claims_json" \
+  '$claims | map(select($runs[.run].capture == "safe-utils"))')
+jq -e 'all(.[]; .input_format == "safe-service" and .input_profile == "safe-utils" and
+    (.safe_address | test("^0x[0-9a-fA-F]{40}$")) and (.safe_nonce | test("^(0|[1-9][0-9]*)$")))' \
+    <<<"$capture_claims" >/dev/null \
+  || die "config: capture claims need safe-service format, safe-utils profile, safe_address and safe_nonce"
+jq -e 'group_by([.run, (.safe_address | ascii_downcase), .safe_nonce]) | all(.[]; length == 1)' \
+    <<<"$capture_claims" >/dev/null || die "config: capture claims must have distinct Safe/nonce bindings within a run"
 
 # safe_ui_prefix and safe_tx_service_url end up in links and requests, and on a
 # fork PR the config is the attacker's.

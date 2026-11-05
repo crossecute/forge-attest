@@ -31,8 +31,9 @@ script it runs, and the exact outputs that commit must produce. Given one,
 | 4 | **Hash cross-check (Solidity)** | Is the derivation itself trustworthy? | A `forge test` re-reads the *producer's* JSON, redoes the folding and recomputes the same hash in Solidity, asserting it agrees with #3 and the pinned value. No single implementation is trusted, and normalisation itself is covered. |
 | 5 | **Live integrity** | Is the tx *actually queued in the Safe* the same one? | Run `safe-tx-hashes-util` against the Safe Transaction Service (`--network --address --nonce`) and assert the queued tx's hash equals the script-derived hash, and that no other tx is queued at that nonce. |
 
-Before those, the run itself is checked. Every claimed file must be one the script
-wrote during this run, not a copy committed in the producer repo. Every other file
+Before those, the run itself is checked. File-based claims must be written during
+this run, not copied from committed output. Captured requests and Zeus traces
+must come from this run's transport or traces. Every other file
 it writes must be claimed or listed as `unclaimed`. A run that simulates
 transactions from an EOA (a deploy under `vm.startBroadcast`) is refused unless it
 pins the fork block and the senders. Without those pins the deployed address
@@ -268,8 +269,10 @@ from any of them has the same canonical `sha256`, `safeTxHash` and on-chain cost
 so changing a producer's output format does not change what you pin. Only the raw
 `expected_output_sha256` depends on the file's bytes.
 
-The file must be written by the producer's script during the run, as for every
-format. A copy committed in the producer repo does not count. To see what a file
+File-based inputs must be written by the producer's script during the run. With
+`capture = "safe-utils"`, the input is instead the request intercepted during
+that run; with `zeus-traces`, it is the run's traces. A copy committed in the
+producer repo does not count. To see what a file
 folds into before you pin anything, run the normaliser on it (it needs `cast`):
 
 ```bash
@@ -384,10 +387,63 @@ and the two must agree with each other. A mismatch fails the run. Fields that on
 Changing `sender`, `signature` or `origin` changes the raw `sha256` but not the
 canonical transaction.
 
-Libraries that build the request only in memory need an export hook that writes
-it. This reader does not run their signing or broadcast path. See the
+Libraries that build the request only in memory need an export hook or the
+explicit capture mode below. The reader itself does not run a signing or
+broadcast path. See the
 [request fixture](test/fixtures/safe-service.json) and
 [profile requirements](docs/producer-readers.md#exported-safe-service-requests).
+
+### Capturing safe-utils proposals without changing the producer
+
+Set `capture = "safe-utils"` on a run to execute a proposal script that normally
+posts through `solidity-http`'s bare `curl` command over FFI. No producer wrapper,
+export method or custom JSON writer is needed. See
+[`attest.capture.example.toml`](attest.capture.example.toml) for the unchanged M0
+nonce 22 script and its historical inputs.
+
+```toml
+[[run]]
+script = "script/ProposeTransferSwapFacilityOwner.s.sol:ProposeTransferSwapFacilityOwner"
+capture = "safe-utils"
+rpc_env = "MAINNET_RPC_URL"
+fork_block = "23834855"
+
+[run.env]
+PRIVATE_KEY = "1"  # public test key for the producer's local signing step
+
+[[run.claim]]
+output_path = "captured/nonce22.json"
+input_format = "safe-service"
+input_profile = "safe-utils"
+safe_address = "0xdcf79C332cB3Fe9d39A830a5f8de7cE6b1BD6fD1"
+safe_nonce = "22"
+expected_safe_tx_hash = "0xab7012df75fc7907ace6cb632bc3865ded2956c33fa2aab2d4b3d85167d485a6"
+```
+
+The runner enables FFI and prepends a local curl interceptor only for this run.
+It captures each inline JSON POST to `/api/v1/safes/<safe>/multisig-transactions/`,
+matches its Safe and body nonce to exactly one claim, and returns a local HTTP
+201 response. Missing, duplicate or unclaimed proposals, unsupported curl options,
+non-proposal routes and transport errors fail verification, even if the script
+ignores a failed request. Multiple proposals need distinct Safe/nonce bindings
+and a claim for each one. An explicit claim chain must agree with the run's RPC;
+an omitted chain comes from that RPC. The reader checks all signed fields and
+any carried hash, and the usual cast, Solidity and live checks remain active.
+
+`output_path` names the capture; it is not a producer file. Requests are stored
+outside the producer checkout, and a script writing a file at that logical path
+fails. Both flat and runs layouts accept `capture`. Verdicts add `capture` only
+when active; a flat verdict also records its pinned fork block. The raw request
+and canonical transaction formats and on-chain costs do not change.
+
+This mode is a transport adapter, not a network sandbox. It never forwards its
+supported curl requests. Absolute curl paths, other HTTP clients, scripts that
+replace `PATH`, and arbitrary FFI can bypass it and are outside its scope. Review
+the pinned producer and setup as executable code. Use only public test keys for
+the producer's local signing step, never an owner key or hardware wallet. A
+test-key signature is request metadata, not an owner approval. The verifier's
+optional `--attest` workflow separately signs the verified canonical transaction
+with the owner's selected wallet.
 
 ### `call`: just the call
 
@@ -1008,6 +1064,7 @@ hash derivations do not agree.
 forge test            # Solidity: hashing, MultiSend packing, every JSON format
 ./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --attest
 bash test/shell/readers.sh   # only the typed-data, service and decoded-builder readers
+bash test/shell/capture.sh   # native FFI proposal capture and completeness
 ```
 
 The shell suite starts two local `anvil` chains for the multi-chain tests, and
@@ -1037,6 +1094,7 @@ forge-attest/
 ├── attest.toml                   # the claim being attested
 ├── attest.batch.example.toml     # a commented claim for a Transaction Builder batch
 ├── attest.runs.example.toml      # a commented config with several runs and claims
+├── attest.capture.example.toml   # unchanged M0 safe-utils proposal capture
 ├── SECURITY.md                   # how to report a vulnerability
 ├── docs/
 │   └── producer-readers.md       # typed-data, service and decoded-builder profiles, in detail
@@ -1048,6 +1106,7 @@ forge-attest/
 │   ├── derive.sh                 # cast-based safeTxHash derivation (check #3)
 │   ├── safe_hashes.sh            # vendored safe-tx-hashes-util (check #5)
 │   ├── claims.sh                 # reads attest.toml into one model, refusing ambiguous TOML
+│   ├── capture.sh                # captures supported safe-utils curl requests without forwarding
 │   ├── landed.sh                 # finds a pinned sender's transactions on chain
 │   ├── propose.sh                # signs and submits an attested tx (--attest)
 │   ├── status.sh                 # the per-chain table --attest keeps

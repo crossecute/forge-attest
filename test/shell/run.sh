@@ -1661,6 +1661,7 @@ check_vendored safe_hashes.sh
 check_vendored multisend-exceptions.json
 
 if bash "$ROOT/test/shell/readers.sh"; then pass "producer reader suites"; else fail "producer reader suites"; fi
+if bash "$ROOT/test/shell/capture.sh"; then pass "native proposal capture suite"; else fail "native proposal capture suite"; fi
 
 # ------------------------------------------------------------------- verdict
 
