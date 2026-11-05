@@ -347,39 +347,31 @@ contract SafeTxHashTest {
 
     // ------------------------------------------------- a batch that binds itself
 
-    /// The Transaction Builder schema has a slot for the Safe a batch was built
-    /// for: `meta.createdFromSafeAddress`. A producer that fills it in makes the
-    /// file self-describing, so the Safe no longer has to be supplied out of band.
-    function test_BatchDeclaringItsOwnSafe() external view {
-        string memory json = _read("tx-builder-self-binding.json");
-        require(SafeTxLib.readSafeAddress(json) == SAFE, "declared safe");
-
-        SafeTxLib.Binding memory b;
-        b.nonce = NONCE; // deliberately no safe: the file supplies it
-
-        SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, b);
-        require(t.safe == SAFE, "safe taken from meta");
-        require(t.chainId == 1, "chainId");
-        _assertEq(t.hash(), 0x451bf409acadd38b8aecde55d6fd4b4f2c0689465525db81f10ec6426a376d83, "self-binding batch");
+    function test_BatchSafeBindings() external {
+        string[2] memory fixtures = ["tx-builder-self-binding.json", "tx-builder-etherfi-binding.json"];
+        for (uint256 i = 0; i < fixtures.length; i++) {
+            string memory json = _read(fixtures[i]);
+            require(SafeTxLib.readSafeAddress(json) == SAFE, "declared safe");
+            SafeTxLib.Binding memory b;
+            b.nonce = NONCE;
+            SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, b);
+            require(t.safe == SAFE, "safe from file");
+            require(t.chainId == 1, "chainId");
+            bytes32 expected = 0x451bf409acadd38b8aecde55d6fd4b4f2c0689465525db81f10ec6426a376d83;
+            _assertEq(t.hash(), expected, "self-binding batch");
+            _assertEq(SafeTxLib.readAny(json, _binding()).hash(), expected, "agreeing config");
+            b.safe = address(0xB0B);
+            (bool ok, bytes memory err) = address(this).call(abi.encodeCall(this.readAnyExternal, (json, b)));
+            require(!ok && _contains(err, "safe address mismatch"), "expected config mismatch");
+        }
     }
 
-    /// A config that agrees with the file is fine and is the useful case: two
-    /// independent statements of the same fact.
-    function test_DeclaredSafeAgreeingWithConfig() external view {
-        SafeTxLib.SafeTx memory t = SafeTxLib.readAny(_read("tx-builder-self-binding.json"), _binding());
-        _assertEq(t.hash(), 0x451bf409acadd38b8aecde55d6fd4b4f2c0689465525db81f10ec6426a376d83, "agreeing config");
-    }
-
-    /// A config that contradicts the file is a tampering signal. Someone pointed
-    /// a reviewed batch at a different Safe. It must never be silently resolved.
-    function test_RejectsDeclaredSafeContradictingConfig() external {
-        SafeTxLib.Binding memory b = _binding();
-        b.safe = address(0xB0B);
-
-        (bool ok, bytes memory err) =
-            address(this).call(abi.encodeCall(this.readAnyExternal, (_read("tx-builder-self-binding.json"), b)));
-        require(!ok, "expected revert");
-        require(_contains(err, "safe address mismatch"), "wrong revert");
+    function test_ConflictingBatchSafeDeclarations() external {
+        string memory json = '{"chainId":"1","safeAddress":"0x111CEEee040739fD91D29C34C33E6B3E112F2177",'
+            '"meta":{"createdFromSafeAddress":"0x0000000000000000000000000000000000000b0b"},'
+            '"transactions":[{"to":"0x0000000000000000000000000000000000000b0b"}]}';
+        (bool ok, bytes memory err) = address(this).call(abi.encodeCall(this.readAnyExternal, (json, _binding())));
+        require(!ok && _contains(err, "safe address mismatch"), "expected declaration mismatch");
     }
 
     /// Files with no such declaration keep working exactly as before.

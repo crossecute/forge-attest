@@ -21,7 +21,7 @@
 #                Safe UI's "export batch" gives you:
 #                  { version, chainId, createdAt, meta, transactions: [
 #                      { to, value?, data?, operation? }, ... ] }
-#                A batch carries no Safe address, nonce or gas fields, so those
+#                A batch may declare a Safe address. Nonce and gas fields
 #                must be supplied via flags. Multi-transaction batches are packed
 #                into a single `multiSend(bytes)` delegatecall exactly as the Safe
 #                UI does, which is what the owners actually sign.
@@ -201,11 +201,17 @@ elif [[ "$FORMAT" == "call" ]]; then
 fi
 
 # --- gather the Safe-level binding (identical for every format) ---------------
-# A Transaction Builder file can name the Safe it was built for; the schema slot
-# is `meta.createdFromSafeAddress`. When a producer fills it in, the file binds
-# itself and --safe becomes a cross-check rather than a required input.
-json_safe=$(jget '.safe')
-[[ -n "$json_safe" ]] || json_safe=$(jget '.meta.createdFromSafeAddress')
+# Batch producers use several Safe address slots. Every declaration must agree
+# with the others and with --safe; no field takes precedence over another.
+json_safe=""
+safe_keys=('.safe' '.meta.createdFromSafeAddress')
+[[ "$FORMAT" != "tx-builder" ]] || safe_keys+=('.safeAddress')
+for safe_key in "${safe_keys[@]}"; do
+  declared_safe=$(jget "$safe_key")
+  [[ -n "$declared_safe" ]] || continue
+  declared_safe=$(norm_addr "$declared_safe")
+  json_safe=$(reconcile "safe address" "$json_safe" "$declared_safe")
+done
 safe=$(reconcile "safe address" "$json_safe" "$SAFE")
 nonce=$(reconcile "nonce" "$(jget '.nonce')" "$NONCE")
 chain_id=$(reconcile "chainId" "$(jget '.chainId')" "$CHAIN_ID")
