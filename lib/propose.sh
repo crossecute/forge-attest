@@ -146,16 +146,8 @@ if [[ "$preflight" == 1 ]]; then
 fi
 
 # --- sign ---------------------------------------------------------------------
-jq '{
-  types: {
-    EIP712Domain: [ {name: "chainId", type: "uint256"},
-                    {name: "verifyingContract", type: "address"} ],
-    SafeTx: [ {name: "to", type: "address"}, {name: "value", type: "uint256"},
-              {name: "data", type: "bytes"}, {name: "operation", type: "uint8"},
-              {name: "safeTxGas", type: "uint256"}, {name: "baseGas", type: "uint256"},
-              {name: "gasPrice", type: "uint256"}, {name: "gasToken", type: "address"},
-              {name: "refundReceiver", type: "address"}, {name: "nonce", type: "uint256"} ]
-  },
+jq --slurpfile schema "$SCRIPT_DIR/safe-tx-types.json" '{
+  types: $schema[0],
   primaryType: "SafeTx",
   domain: { chainId: .chainId, verifyingContract: .safe },
   message: { to, value, data, operation, safeTxGas, baseGas, gasPrice,

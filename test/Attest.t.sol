@@ -57,7 +57,9 @@ contract AttestTest {
         b.gasToken = _envAddress("ATTEST_GAS_TOKEN");
         b.refundReceiver = _envAddress("ATTEST_REFUND_RECEIVER");
 
-        SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, b);
+        SafeTxLib.SafeTx memory t = SafeTxLib.readWithFormat(
+            json, b, vm.envOr("ATTEST_INPUT_FORMAT", string("")), vm.envOr("ATTEST_INPUT_PROFILE", string(""))
+        );
         bytes32 computed = t.hash();
         if (b.safe == address(0)) b.safe = t.safe;
 

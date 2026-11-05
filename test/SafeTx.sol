@@ -4,6 +4,8 @@ pragma solidity 0.8.28;
 /// @dev Inline cheatcode surface. forge-attest's verifier has no Solidity
 ///      dependencies: no forge-std, nothing to `forge install`, nothing to drift.
 interface Vm {
+    function parseJsonKeys(string calldata json, string calldata key) external pure returns (string[] memory);
+    function parseJsonStringArray(string calldata json, string calldata key) external pure returns (string[] memory);
     function envString(string calldata name) external view returns (string memory);
     function envOr(string calldata name, string calldata defaultValue) external view returns (string memory);
     function readFile(string calldata path) external view returns (string memory);
@@ -268,16 +270,88 @@ library SafeTxLib {
         t.safe = vm.parseJsonAddress(json, ".safe");
         t.chainId = vm.parseJsonUint(json, ".chainId");
         t.safeVersion = vm.keyExistsJson(json, ".safeVersion") ? vm.parseJsonString(json, ".safeVersion") : "1.3.0";
-        t.to = vm.parseJsonAddress(json, ".to");
-        t.value = vm.parseJsonUint(json, ".value");
-        t.data = _optionalBytes(json, ".data");
-        t.operation = _readOperation(json, ".operation");
-        t.safeTxGas = vm.parseJsonUint(json, ".safeTxGas");
-        t.baseGas = vm.parseJsonUint(json, ".baseGas");
-        t.gasPrice = vm.parseJsonUint(json, ".gasPrice");
-        t.gasToken = vm.parseJsonAddress(json, ".gasToken");
-        t.refundReceiver = vm.parseJsonAddress(json, ".refundReceiver");
-        t.nonce = vm.parseJsonUint(json, ".nonce");
+        t = readSignedFields(json, "", t);
+    }
+
+    function readSignedFields(string memory json, string memory at, SafeTx memory t)
+        private view returns (SafeTx memory)
+    {
+        t.to = vm.parseJsonAddress(json, string.concat(at, ".to"));
+        t.value = vm.parseJsonUint(json, string.concat(at, ".value"));
+        t.data = _optionalBytes(json, string.concat(at, ".data"));
+        t.operation = _readOperation(json, string.concat(at, ".operation"));
+        t.safeTxGas = vm.parseJsonUint(json, string.concat(at, ".safeTxGas"));
+        t.baseGas = vm.parseJsonUint(json, string.concat(at, ".baseGas"));
+        t.gasPrice = vm.parseJsonUint(json, string.concat(at, ".gasPrice"));
+        t.gasToken = vm.parseJsonAddress(json, string.concat(at, ".gasToken"));
+        t.refundReceiver = vm.parseJsonAddress(json, string.concat(at, ".refundReceiver"));
+        t.nonce = vm.parseJsonUint(json, string.concat(at, ".nonce"));
+        return t;
+    }
+
+    function requireKeys(string memory json, string memory at, string memory expected) internal view {
+        string[] memory keys = vm.parseJsonKeys(json, at);
+        string[] memory want = vm.parseJsonStringArray(expected, "$");
+        require(keys.length == want.length, "SafeTxLib: unexpected object keys");
+        for (uint256 i = 0; i < keys.length; i++) {
+            bool found;
+            for (uint256 j = 0; j < want.length; j++) {
+                if (keccak256(bytes(keys[i])) == keccak256(bytes(want[j]))) found = true;
+            }
+            require(found, "SafeTxLib: unexpected object key");
+        }
+    }
+
+    function readEip712(string memory json, Binding memory b, string memory profile) internal view returns (SafeTx memory t) {
+        require(bytes(profile).length == 0 || _is(profile, "safe") || _is(profile, "safe-utils"), "SafeTxLib: unknown typed-data profile");
+        requireKeys(json, "$", '["domain","message","primaryType","types"]');
+        require(_is(vm.parseJsonString(json, ".primaryType"), "SafeTx"), "SafeTxLib: primaryType is not SafeTx");
+        requireKeys(json, ".domain", '["chainId","verifyingContract"]');
+        bool hasDomain = vm.keyExistsJson(json, ".types.EIP712Domain");
+        require(hasDomain || _is(profile, "safe-utils"), "SafeTxLib: missing domain type");
+        requireKeys(json, ".types", hasDomain ? '["EIP712Domain","SafeTx"]' : '["SafeTx"]');
+        string[10] memory names = ["to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"];
+        string[10] memory types_ = ["address","uint256","bytes","uint8","uint256","uint256","uint256","address","address","uint256"];
+        for (uint256 i = 0; i < names.length; i++) _checkType(json, ".types.SafeTx", i, names[i], types_[i]);
+        require(!vm.keyExistsJson(json, ".types.SafeTx[10]"), "SafeTxLib: extra type field");
+        if (hasDomain) {
+            _checkType(json, ".types.EIP712Domain", 0, "chainId", "uint256");
+            _checkType(json, ".types.EIP712Domain", 1, "verifyingContract", "address");
+            require(!vm.keyExistsJson(json, ".types.EIP712Domain[2]"), "SafeTxLib: extra domain field");
+        }
+        requireKeys(json, ".message", '["to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"]');
+        t.safe = vm.parseJsonAddress(json, ".domain.verifyingContract");
+        t.chainId = vm.parseJsonUint(json, ".domain.chainId");
+        t.safeVersion = bytes(b.safeVersion).length == 0 ? "1.3.0" : b.safeVersion;
+        t = readSignedFields(json, ".message", t);
+        require(t.safe != address(0) && t.chainId != 0, "SafeTxLib: missing Safe or chain");
+        require(b.safe == address(0) || b.safe == t.safe, "SafeTxLib: safe mismatch");
+        require(b.chainId == 0 || b.chainId == t.chainId, "SafeTxLib: chain mismatch");
+    }
+
+    function _checkType(string memory json, string memory base, uint256 i, string memory name, string memory typ) private view {
+        string memory at = string.concat(base, "[", vm.toString(i), "]");
+        requireKeys(json, at, '["name","type"]');
+        require(_is(vm.parseJsonString(json, string.concat(at, ".name")), name) &&
+            _is(vm.parseJsonString(json, string.concat(at, ".type")), typ), "SafeTxLib: incompatible typed-data schema");
+    }
+
+    function _is(string memory a, string memory b) private pure returns (bool) {
+        return keccak256(bytes(a)) == keccak256(bytes(b));
+    }
+
+    function readWithFormat(string memory json, Binding memory b, string memory format, string memory profile)
+        internal view returns (SafeTx memory)
+    {
+        bool typed = vm.keyExistsJson(json, ".primaryType") || vm.keyExistsJson(json, ".types") ||
+            vm.keyExistsJson(json, ".domain") || vm.keyExistsJson(json, ".message");
+        if (_is(format, "safe-eip712") || ((bytes(format).length == 0 || _is(format, "auto")) && typed)) {
+            return readEip712(json, b, profile);
+        }
+        require(bytes(profile).length == 0, "SafeTxLib: profile unsupported for format");
+        require(bytes(format).length == 0 || _is(format, "auto") || _is(format, "safe-tx") ||
+            _is(format, "call") || _is(format, "tx-builder") || _is(format, "tx-array"), "SafeTxLib: unknown format");
+        return readAny(json, b);
     }
 
     /// @notice Read a Safe{Wallet} Transaction Builder batch (`.transactions`) or

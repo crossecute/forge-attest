@@ -30,8 +30,8 @@ CONFIG="${1:?usage: claims.sh <attest.toml>}"
 
 PRODUCER_KEYS=(producer_repo producer_commit producer_setup expected_forge_version)
 RUN_KEYS=(script rpc_env fork_block senders unclaimed)
-DEFAULT_KEYS=(input_format batch_mode safe_version multisend_address)
-CLAIM_KEYS=(output_path input_format batch_mode multisend_address safe_version chain_id
+DEFAULT_KEYS=(input_format input_profile batch_mode safe_version multisend_address)
+CLAIM_KEYS=(output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
   child_safe child_nonce child_network expected_child_safe_tx_hash
   safe_network safe_address safe_nonce live safe_ui_prefix safe_tx_service_url
