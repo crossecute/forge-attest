@@ -35,6 +35,11 @@
 #   tx-array     A bare JSON array of { to, value?, data?, operation? }.
 #                Treated the same as tx-builder, with chainId supplied via flags.
 #
+#   zeus-traces  The `forge script --json` output of a Zeus MultisigBuilder script
+#                (explicit only). The Safe and call type come from its
+#                ZeusRequireMultisig event and the calls from its traces; see
+#                docs/producer-readers.md. Needs --multisend for more than one call.
+#
 # The canonical output is deterministic: fixed key order, all scalars quoted, all
 # hex lowercased. Its sha256 is therefore stable across producers even when the
 # source JSON carries volatile metadata (`createdAt`, `meta`, key ordering,
@@ -45,7 +50,7 @@
 #
 # Options:
 #   --input PATH            source JSON (required)
-#   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array
+#   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-builder-decoded | tx-array | zeus-traces
 #   --profile NAME          safe-eip712/safe-service: safe (default) | safe-utils; tx-builder: static-v1
 #   --safe ADDR             Safe address        (required if absent from JSON)
 #   --nonce N               Safe nonce          (required for batches and calls)
@@ -195,11 +200,11 @@ if [[ "$FORMAT" == "auto" ]]; then
   elif [[ "$root_type" == "object" && -n "$(jget '.to')" ]]; then
     if binds_safe_tx; then FORMAT="safe-tx"; else FORMAT="call"; fi
   else
-    die "cannot detect input format; pass --format safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array"
+    die "cannot detect input format; pass --format safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array|zeus-traces"
   fi
 fi
 
-case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
+case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array|zeus-traces) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
 if [[ "$FORMAT" == "safe-eip712" ]]; then
@@ -211,6 +216,10 @@ elif [[ "$FORMAT" == "safe-service" ]]; then
 elif [[ "$FORMAT" == "tx-builder-decoded" || ( "$FORMAT" == "tx-builder" && "$PROFILE" == static-v1 ) ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_decoded
+elif [[ "$FORMAT" == "zeus-traces" ]]; then
+  source "$NORMALIZE_DIR/readers.sh"
+  [[ "$BATCH_MODE" != multisend ]] || die "zeus-traces sends a single call directly; --batch-mode multisend does not apply"
+  reader_zeus
 elif [[ -n "$PROFILE" ]]; then
   die "--profile is not supported for $FORMAT"
 fi
@@ -316,6 +325,11 @@ else
     # which is a wrong hash that looks authoritative. test/SafeTx.sol implements exactly this
     # mapping; the two must not drift, or the independent derivations stop being a
     # check on each other.
+    # The Zeus CLI batches through Safe protocol-kit, whose MultiSend address is
+    # not derived here. Only one transaction of this kind was checked on-chain
+    # (Safe 1.4.1, plain MultiSend), so the claim must name the address.
+    [[ "$FORMAT" != zeus-traces || -n "$MULTISEND" ]] \
+      || die "zeus-traces batches several calls through the MultiSend its CLI chose; pass --multisend explicitly"
     if [[ -z "$MULTISEND" ]]; then
       case "$safe_version" in
         1.3|1.3.*) MULTISEND="$MULTISEND_CALL_ONLY_130"; ms_key="1.3.0" ;;

@@ -153,6 +153,74 @@ reader_decoded() {
   J=$(jq_root -c --argjson txs "$output" '.transactions = $txs')
 }
 
+# zeus-traces: the calls a Zeus MultisigBuilder script makes as its multisig, read
+# from `forge script --json` output. The Zeus CLI keeps successful CALLs whose
+# trace caller is the script contract (foundry#10050). Forge now reports the
+# pranked address as the caller, so that filter selects nothing on current
+# Foundry. This reader takes the script's own direct CALLs made as the multisig,
+# and refuses anything that filter would have skipped or included differently.
+ZEUS_REQUIRE_MULTISIG_TOPIC=0x266451a6d1ed09ee208a1765cc40c5c930ef0afc8c58cdc702b9c939cdaf87d6
+ZEUS_VM_ADDRESS=0x7109709ecfa91a80626ff3989d68f67f5b1dd12d
+
+reader_zeus() {
+  local size selected
+  size=$(wc -c <"$INPUT")
+  (( size <= 8388608 )) || die "zeus-traces input exceeds 8 MiB"
+  [[ -z "$PROFILE" ]] || die "zeus-traces has no profiles"
+  selected=$(jq_root -c --arg topic "$ZEUS_REQUIRE_MULTISIG_TOPIC" --arg vm "$ZEUS_VM_ADDRESS" '
+    def addr: type == "string" and test("^0x[0-9a-fA-F]{40}$");
+    def hexnum:
+      if type == "string" and test("^0x[0-9a-fA-F]+$") then
+        (ltrimstr("0x") | sub("^0+(?=.)"; "")) as $h
+        | if ($h | length) > 14 then error("call value exceeds the exact range of a JavaScript number")
+          else ($h | explode | reduce .[] as $d (0; . * 16 + (if $d >= 97 then $d - 87 elif $d >= 65 then $d - 55 else $d - 48 end)))
+            | if . > 9007199254740991 then error("call value exceeds the exact range of a JavaScript number") else . end
+          end
+      else error("malformed call value") end;
+    try (
+      if (type == "object" and .success == true and (.traces | type == "array") and (.raw_logs | type == "array"))
+      then . else error("not a successful forge script --json result") end
+      | . as $run
+      | [.traces[] | select(type == "array" and .[0] == "Execution")] as $blocks
+      | if ($blocks | length) != 1 then error("expected exactly one Execution trace block, found \($blocks | length)") else . end
+      | ($blocks[0][1].arena) as $arena
+      | ($arena[0]) as $root
+      | if ($root.idx == 0 and $root.parent == null and $root.trace.kind == "CALL" and $root.trace.success == true
+            and ($root.trace.address | addr)) then . else error("malformed entry call") end
+      | ($root.trace.address | ascii_downcase) as $script
+      | [$run.raw_logs[] | select((.topics | type) == "array" and (.topics[0] // "" | ascii_downcase) == $topic)] as $events
+      | if ($events | length) != 1 then error("expected exactly one ZeusRequireMultisig event, found \($events | length)") else . end
+      | ($events[0]) as $event
+      | if ((($event.address // "") | ascii_downcase) != $script) then error("ZeusRequireMultisig was not emitted by the script") else . end
+      | if ((($event.topics | length) == 1) and (($event.data // "") | test("^0x[0-9a-fA-F]{128}$"))) then . else error("malformed ZeusRequireMultisig event") end
+      | ($event.data | ltrimstr("0x") | ascii_downcase) as $d
+      | if ($d[0:24] != ("0" * 24)) then error("malformed multisig address in ZeusRequireMultisig") else . end
+      | ("0x" + $d[24:64]) as $safe
+      | if $safe == "0x0000000000000000000000000000000000000000" then error("the multisig must not be the zero address") else . end
+      | ($d[64:128]) as $type
+      | (if $type == ("0" * 64) then 0 elif $type == (("0" * 63) + "1") then 1 else error("callType must be 0 (Call) or 1 (DelegateCall)") end) as $op
+      | [$arena[] | select(.parent == 0)]
+      | reduce .[] as $e ([];
+          $e.trace as $t
+          | ($t.address | addr) as $isaddr
+          | if $t.kind == "STATICCALL" then .
+            elif ($t.kind == "CALL" and ($t.address | ascii_downcase) == $vm) then .
+            elif $t.kind != "CALL" then error("the script makes a \($t.kind) (trace \($e.idx)); only calls as the multisig are supported")
+            elif (($t.caller // "" | ascii_downcase) != $safe) then error("call at trace \($e.idx) is not made by the multisig \($safe)")
+            elif $t.success != true then error("call at trace \($e.idx) reverted; the Zeus CLI would silently drop it")
+            elif ($isaddr | not) then error("malformed call target at trace \($e.idx)")
+            elif (($t.data | type) != "string" or ($t.data | test("^0x([0-9a-fA-F]{2})*$") | not)) then error("malformed call data at trace \($e.idx)")
+            else . + [{to: ($t.address | ascii_downcase), value: ($t.value | hexnum | tostring), data: ($t.data | ascii_downcase), operation: ($op | tostring)}]
+            end)
+      | if length == 0 then error("the script made no calls as the multisig") else . end
+      | {safe: $safe, transactions: .}
+    ) catch ("ERR:" + (. | tostring))') || die "zeus-traces input could not be read"
+  if [[ "$selected" == '"ERR:'* ]]; then
+    die "zeus-traces: $(jq -r 'ltrimstr("ERR:")' <<<"$selected")"
+  fi
+  J="$selected"
+}
+
 reader_uints() {
   jq -es 'all(.[]; if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
     elif type == "string" then test("^(0|[1-9][0-9]*)$") else false end)' >/dev/null \

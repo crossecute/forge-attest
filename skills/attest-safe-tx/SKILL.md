@@ -86,3 +86,10 @@ the descriptor uses only the supported address/bool/uint8/uint256 scalar types.
 Do not choose a profile from `meta.txBuilderVersion` alone. Unsupported types
 need producer-encoded calldata; see `docs/producer-readers.md` for the exact
 version evidence, input limits and mismatch rules.
+
+For a Zeus `MultisigBuilder` script, which writes no file, use
+`input_format = "zeus-traces"` in a `[[run]]` that sets `rpc_env` and `fork_block`
+and puts the `ZEUS_*` values it reads in `[run.env]`. Take those values and
+`multisend_address` from the user or the Zeus environment, never from the model.
+A reverted call, a call the script makes as itself, or a second event fails the
+run; do not edit the claim to get around that. See `docs/producer-readers.md`.

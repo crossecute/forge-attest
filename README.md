@@ -256,6 +256,7 @@ establish compatibility.
 | `call` | is an object with `to` and no Safe field | none | `safe_address`, `safe_nonce`, `chain_id` |
 | `tx-builder` | is an object with a `transactions` array | `static-v1` for decoded calls | `safe_address` and `safe_nonce`, and `chain_id` if the file omits it |
 | `tx-array` | is a bare array | none | `safe_address`, `safe_nonce`, `chain_id` |
+| `zeus-traces` | never detected; name it | none | `safe_nonce`, and `multisend_address` for several calls |
 
 Typed-data and service files carry no Safe version, so it comes from the claim's
 `safe_version` and defaults to `1.3.0`. Set `input_format` and `input_profile` on a
@@ -488,6 +489,39 @@ every vector. That covers the scalar overlap only, not every Transaction Builder
 release. A `txBuilderVersion` in the file's `meta` does not select or certify
 any version. See the [decoded fixture](test/fixtures/tx-builder-decoded.json) and
 [profile limits and version comparisons](docs/producer-readers.md#decoded-transaction-builder-calls).
+
+### `zeus-traces`: a Zeus multisig script's calls
+
+Scripts built on Zeus's `MultisigBuilder` write no file. They emit
+`ZeusRequireMultisig` and make their calls under `vm.startPrank(multisig)`, and the
+Zeus CLI reads the Safe and the calls from `forge script --json` traces. With
+`input_format = "zeus-traces"` the run's own stdout is the artifact:
+
+```toml
+[[run]]
+script     = "script/releases/v1.0.4-init/2-acceptAdminAndSetLimits.s.sol"
+rpc_env    = "MAINNET_RPC_URL"
+fork_block = "23443614"              # required: Zeus drops calls that revert
+
+[run.env]                            # the ZEUS_ENV_* and ZEUS_DEPLOYED_* values it reads
+ZEUS_ENV_computeOpsMultisig = "0x684cf8978c2815716c85eAa237E311f5a44e9e09"
+
+[[run.claim]]
+output_path       = "zeus/2-acceptAdminAndSetLimits"   # names the claim; not read
+input_format      = "zeus-traces"
+safe_version      = "1.4.1"
+multisend_address = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526"
+safe_nonce        = "0"
+```
+
+The run is `forge script --sig execute() -vvvv` unless the run sets `sig`. The Safe and
+call type come from the event, the calls from the entry call's direct successful
+`CALL`s made as the multisig, and `chain_id` from the run's RPC. A reverted call, a
+call the script makes as itself, a contract creation or a second event fails the run
+rather than being dropped or included silently. This differs on purpose from the
+Zeus CLI's own filter, which current Foundry no longer satisfies. Details, the
+claim keys and the reproduction of one executed transaction are in
+[`docs/producer-readers.md`](docs/producer-readers.md#zeus-traces).
 
 ### `tx-array`: a bare array
 
@@ -917,6 +951,9 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
   response cannot run commands or rewrite what the terminal shows.
 - The four offline checks need no network at all beyond cloning the pinned
   producer commit, whose SHA is verified after checkout.
+- A `zeus-traces` claim trusts the `ZEUS_*` values pinned in `[run.env]` for which
+  contracts the script calls, and the RPC's state at `fork_block` for which of its
+  calls succeed. Review both as you would calldata.
 - A run with `rpc_env` trusts that RPC for chain state, as the producer's script
   already does. With `senders` pinned, it is also what reports the senders'
   transactions on chain. A lying RPC could report a deploy as landed when it has

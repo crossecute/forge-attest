@@ -265,7 +265,7 @@ eoa_txs() {
     | unique_by([.chain, .from, .nonce])' "${files[@]}"
 }
 
-RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=() RUN_RPC=()
+RUN_CHAIN=() RUN_BLOCK=() RUN_PINNED=() RUN_RPC=() RUN_SIG=()
 for (( r = 0; r < n_runs; r++ )); do
   script=$(run_cfg "$r" script)
   rpc_env=$(run_cfg "$r" rpc_env)
@@ -307,12 +307,29 @@ for (( r = 0; r < n_runs; r++ )); do
   # named in the script, since forge takes one --sender.
   (( ${#senders[@]} == 1 )) && args+=(--sender "${senders[0]}")
   mapfile -t run_claims < <(claims_of_run "$r")
+  # A zeus-traces claim reads the calls out of the run's own traces, so the run
+  # asks forge for them (-vvvv) and calls the entry point Zeus does.
+  zeus=0
+  for i in "${run_claims[@]}"; do [[ "$(cfg "$i" input_format)" == zeus-traces ]] && zeus=1; done
+  sig=$(run_cfg "$r" sig)
+  (( zeus )) && { [[ -n "$sig" ]] || sig="execute()"; args+=(-vvvv); }
+  [[ -z "$sig" ]] || args+=(--sig "$sig")
+  RUN_SIG[r]="$sig"
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
   in_clone env "${producer_env[@]}" "$forge_bin" script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
   snapshot "$WORK/snap.$r.after"
+  # The run's traces are one JSON object on stdout. Anything else there would be
+  # read as a trace by a lenient reader, so exactly one is required.
+  if (( zeus )); then
+    grep -E '^\{' "$WORK/forge.$r.out" >"$WORK/zeus.$r.json" || true
+    if [[ "$(wc -l <"$WORK/zeus.$r.json")" -ne 1 ]] || ! jq -e 'type == "object"' "$WORK/zeus.$r.json" >/dev/null 2>&1; then
+      rm -f "$WORK/zeus.$r.json"
+      record_fail "$label: forge script did not print exactly one JSON result"
+    fi
+  fi
   written_between "$WORK/snap.$r.before" "$WORK/snap.$r.after" >"$WORK/written.$r"
   while IFS= read -r f; do
     for d in "${forge_dirs[@]}"; do [[ "$f" == "$d/"* ]] && continue 2; done
@@ -366,6 +383,17 @@ for (( r = 0; r < n_runs; r++ )); do
     p=$(cfg "$i" output_path)
     expected_paths+=("$p")
     inside_clone "$p"
+    if [[ "$(cfg "$i" input_format)" == zeus-traces ]]; then
+      # output_path only names the claim: the source is the run's stdout.
+      if grep -qxF -- "$p" "$WORK/written.$r"; then
+        record_fail "script wrote $p, which names a zeus-traces claim and is not read" "$i"
+      elif [[ -f "$WORK/zeus.$r.json" ]]; then
+        ok "read the traces of $label for $p"
+      else
+        record_fail "no traces to read for $p" "$i"
+      fi
+      continue
+    fi
     if { grep -qxF -- "$p" "$WORK/written.$r" \
          || { (( r == 0 )) && grep -qxF -- "$p" "$WORK/written.setup"; }; } \
        && [[ -f "$WORK/repo/$p" && ! -L "$WORK/repo/$p" ]]; then
@@ -414,6 +442,11 @@ attest_claim() { # <claim index>
   expected_child_hash=$(lc "$(cfg "$i" expected_child_safe_tx_hash)")
   run=$(cfg "$i" run)
   out_json="$WORK/repo/$output_path"
+  if [[ "$input_format" == zeus-traces ]]; then
+    out_json="$WORK/zeus.$run.json"
+    # Forge's JSON carries no chain id, so it comes from the run's RPC.
+    [[ -n "$chain_id" ]] || chain_id="${RUN_CHAIN[run]}"
+  fi
 
   # --- 3. source integrity: sha256 of the emitted JSON ------------------------
   # Byte-exact, so it only applies to producers whose output has no volatile
@@ -941,11 +974,11 @@ for (( r = 0; r < n_runs; r++ )); do
   jq -n --arg script "$(run_cfg "$r" script)" --arg rpc_env "$(run_cfg "$r" rpc_env)" \
     --argjson env "$(run_cfg "$r" env)" \
     --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" \
-    --arg fork_block "$(run_cfg "$r" fork_block)" --argjson senders "$(run_cfg "$r" senders)" \
+    --arg fork_block "$(run_cfg "$r" fork_block)" --arg sig "${RUN_SIG[r]:-}" --argjson senders "$(run_cfg "$r" senders)" \
     --argjson written "$(jq -cRn '[inputs | select(. != "")]' <"$WORK/outputs.$r" 2>/dev/null || echo '[]')" \
     --argjson txs "$(jq -c 'map(del(.input, .to, .value))' <<<"$txs")" \
     '{script: $script, env: $env, rpc_env: $rpc_env, chain_id: $chain_id, block: $block,
-      fork_block: $fork_block, senders: $senders, written: $written, sender_transactions: $txs}'
+      fork_block: $fork_block, sig: $sig, senders: $senders, written: $written, sender_transactions: $txs}'
 done >"$WORK/runs.json"
 
 jq -n \
@@ -965,7 +998,7 @@ jq -n \
       cast: $cast_version, producer_solc: $producer_solc } as $toolchain
     | if $layout == "flat" then
         # The single-claim document keeps its original shape. Transactions from
-        # pinned senders are added only when there are some.
+        # pinned senders, and the entry point a run was given, are added only when there are some.
         $claims[0] as $c
         | { attested: $attested,
             producer: { repo: $producer_repo, commit: $producer_commit, script: $runs[0].script },
@@ -974,6 +1007,7 @@ jq -n \
           + (if ($runs[0].sender_transactions | length) > 0
              then { fork_block: $runs[0].fork_block, sender_transactions: $runs[0].sender_transactions }
              else {} end)
+          + (if $runs[0].sig != "" then { fork_block: $runs[0].fork_block, sig: $runs[0].sig } else {} end)
       else
         { attested: $attested, layout: $layout,
           producer: { repo: $producer_repo, commit: $producer_commit },

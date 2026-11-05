@@ -89,3 +89,16 @@ The transaction list is reused from `tx-builder-self-binding.json` so the pinned
 hash stays the same. The writer hard-codes `meta.txBuilderVersion = "1.16.5"`;
 that string does not establish compatibility with that app release. The fixture
 has no top-level `version`, matching this writer.
+
+## Zeus traces fixture
+
+`zeus-traces.json` is the output of `forge script --sig 'execute()' -vvvv --json`
+for eigenx-contracts' `2-acceptAdminAndSetLimits.s.sol` at `f0d751f`, forge 1.8.1,
+on a fork of Ethereum block 23443614. Only the fields the reader uses were kept
+(`success`, `raw_logs`, and per trace `parent`, `children`, `idx`, `depth`,
+`success`, `caller`, `address`, `kind`, `value`, `data`, `status`), and the
+script's creation bytecode was blanked, so forge itself would print more. The calls
+are the four of Safe `0x684c…9e09`'s executed nonce 0 transaction, whose hash
+`0x9e338be3…` both suites pin. The environment values the script read were taken
+from that transaction. Mutations in `readers-zeus.sh` and `ZeusReader.t.sol` edit
+this file, so each keeps a valid event and Safe.
