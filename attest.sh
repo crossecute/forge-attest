@@ -109,6 +109,16 @@ cfg()     { jq -r --argjson i "$1" --arg k "$2" '.claims[$i][$k]' "$MODEL"; }
 run_cfg() { jq -r --argjson i "$1" --arg k "$2" '.runs[$i][$k]' "$MODEL"; }
 claims_of_run() { jq -r --argjson r "$1" '.claims | to_entries[] | select(.value.run == $r) | .key' "$MODEL"; }
 
+derived_output() {
+  local run
+  run=$(cfg "$1" run)
+  if [[ "$(run_cfg "$run" capture)" == safe-utils ]]; then
+    printf '%s/capture.%s/%s.json' "$WORK" "$run" "$1"
+  elif [[ "$(cfg "$1" input_format)" == zeus-traces ]]; then
+    printf '%s/zeus.%s.json' "$WORK" "$run"
+  fi
+}
+
 # Failures are kept per claim as well as overall, so a multi-claim verdict can
 # say which claim each one belongs to. In the flat layout there is one claim and
 # the messages stay unprefixed.
@@ -222,7 +232,8 @@ written_between() { # <before> <after>: paths new or changed
 # The producer's setup and script need no Safe API credentials.
 in_clone() { (cd "$WORK/repo" && unset SAFE_API_KEY && "$@"); }
 
-mapfile -t declared < <(jq -r '.claims[].output_path, .runs[].unclaimed[]' "$MODEL")
+mapfile -t declared < <(jq -r '. as $m |
+  (.claims[] | select($m.runs[.run].capture != "safe-utils") | .output_path), .runs[].unclaimed[]' "$MODEL")
 for p in "${declared[@]}"; do inside_clone "$p"; done
 # A copy committed at the pinned commit would otherwise pass for the script's
 # output when the script exits 0 without writing it.
@@ -318,8 +329,19 @@ for (( r = 0; r < n_runs; r++ )); do
   for i in "${run_claims[@]}"; do mkdir -p "$WORK/repo/$(dirname "$(cfg "$i" output_path)")"; done
 
   snapshot "$WORK/snap.$r.before"
-  in_clone env "${producer_env[@]}" "$forge_bin" script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
+  capture=$(run_cfg "$r" capture)
+  capture_env=()
+  if [[ "$capture" == safe-utils ]]; then
+    bash "$SCRIPT_DIR/lib/capture.sh" prepare "$MODEL" "$r" "$WORK/capture.$r" "${RUN_CHAIN[r]}" \
+      || die "could not prepare safe-utils capture"
+    capture_env=("PATH=$WORK/capture.$r/bin:$PATH" "FORGE_ATTEST_CAPTURE_DIR=$WORK/capture.$r")
+    args+=(--ffi)
+  fi
+  in_clone env "${producer_env[@]}" "${capture_env[@]}" "$forge_bin" script "$script" "${args[@]}" --json >"$WORK/forge.$r.out" 2>"$WORK/forge.err" \
     || { cat "$WORK/forge.err" >&2; die "forge script failed (see error above)"; }
+  if [[ "$capture" == safe-utils ]]; then
+    bash "$SCRIPT_DIR/lib/capture.sh" verify "$WORK/capture.$r" || record_fail "$label: incomplete or rejected proposal capture"
+  fi
   snapshot "$WORK/snap.$r.after"
   # The run's traces are one JSON object on stdout. Anything else there would be
   # read as a trace by a lenient reader, so exactly one is required.
@@ -383,14 +405,14 @@ for (( r = 0; r < n_runs; r++ )); do
     p=$(cfg "$i" output_path)
     expected_paths+=("$p")
     inside_clone "$p"
-    if [[ "$(cfg "$i" input_format)" == zeus-traces ]]; then
-      # output_path only names the claim: the source is the run's stdout.
+    derived=$(derived_output "$i")
+    if [[ -n "$derived" ]]; then
       if grep -qxF -- "$p" "$WORK/written.$r"; then
-        record_fail "script wrote $p, which names a zeus-traces claim and is not read" "$i"
-      elif [[ -f "$WORK/zeus.$r.json" ]]; then
-        ok "read the traces of $label for $p"
+        record_fail "script wrote $p, which names a run-derived claim and is not read" "$i"
+      elif [[ -f "$derived" ]]; then
+        ok "read run-derived output for $p"
       else
-        record_fail "no traces to read for $p" "$i"
+        record_fail "no run-derived output for $p" "$i"
       fi
       continue
     fi
@@ -425,7 +447,7 @@ R_SHA=() R_CANON_SHA=() R_DOMAIN=() R_MESSAGE=() R_HASH=() R_SOL=() R_CHILD=()
 R_CHAIN=() R_SAFE=() R_NONCE=() R_URL=() R_CHILD_URL=() R_LIVE=() R_ACTION=() R_SENDER=()
 
 attest_claim() { # <claim index>
-  local i="$1" out_json canonical norm_args sol_child
+  local i="$1" out_json canonical norm_args sol_child derived
   local output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   local safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce
   local child_safe child_nonce child_approval expected_child_hash
@@ -442,9 +464,9 @@ attest_claim() { # <claim index>
   expected_child_hash=$(lc "$(cfg "$i" expected_child_safe_tx_hash)")
   run=$(cfg "$i" run)
   out_json="$WORK/repo/$output_path"
-  if [[ "$input_format" == zeus-traces ]]; then
-    out_json="$WORK/zeus.$run.json"
-    # Forge's JSON carries no chain id, so it comes from the run's RPC.
+  derived=$(derived_output "$i")
+  if [[ -n "$derived" ]]; then
+    out_json="$derived"
     [[ -n "$chain_id" ]] || chain_id="${RUN_CHAIN[run]}"
   fi
 
@@ -979,11 +1001,12 @@ for (( r = 0; r < n_runs; r++ )); do
   jq -n --arg script "$(run_cfg "$r" script)" --arg rpc_env "$(run_cfg "$r" rpc_env)" \
     --argjson env "$(run_cfg "$r" env)" \
     --arg chain_id "${RUN_CHAIN[r]}" --arg block "${RUN_BLOCK[r]}" \
-    --arg fork_block "$(run_cfg "$r" fork_block)" --arg sig "${RUN_SIG[r]:-}" --argjson senders "$(run_cfg "$r" senders)" \
+    --arg fork_block "$(run_cfg "$r" fork_block)" --arg sig "${RUN_SIG[r]:-}" --arg capture "$(run_cfg "$r" capture)" --argjson senders "$(run_cfg "$r" senders)" \
     --argjson written "$(jq -cRn '[inputs | select(. != "")]' <"$WORK/outputs.$r" 2>/dev/null || echo '[]')" \
     --argjson txs "$(jq -c 'map(del(.input, .to, .value))' <<<"$txs")" \
     '{script: $script, env: $env, rpc_env: $rpc_env, chain_id: $chain_id, block: $block,
-      fork_block: $fork_block, sig: $sig, senders: $senders, written: $written, sender_transactions: $txs}'
+      fork_block: $fork_block, sig: $sig, senders: $senders, written: $written, sender_transactions: $txs}
+      + (if $capture == "" then {} else {capture: $capture} end)'
 done >"$WORK/runs.json"
 
 jq -n \
@@ -1013,6 +1036,7 @@ jq -n \
              then { fork_block: $runs[0].fork_block, sender_transactions: $runs[0].sender_transactions }
              else {} end)
           + (if $runs[0].sig != "" then { fork_block: $runs[0].fork_block, sig: $runs[0].sig } else {} end)
+          + (if ($runs[0].capture // "") != "" then {capture: $runs[0].capture, fork_block: $runs[0].fork_block} else {} end)
       else
         { attested: $attested, layout: $layout,
           producer: { repo: $producer_repo, commit: $producer_commit },

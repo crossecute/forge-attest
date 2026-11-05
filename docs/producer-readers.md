@@ -81,10 +81,21 @@ integration for every downstream fork.
 
 `input_profile = "safe-utils"` permits the omitted Safe, gas token and refund
 receiver in the [pinned safe-utils request writer](https://github.com/Recon-Fuzz/safe-utils/blob/637e04202bb9bb879803f6b42137e2d5d035fbe0/src/Safe.sol#L691-L702).
-The Safe and chain must then come from the claim. Only this profile supplies the
+The Safe must then come from the claim, and the chain from the claim or a native
+capture run's RPC. Only this profile supplies the
 two omitted zero addresses, and all gas/refund fields must be zero, matching that
 writer. A missing nonce, calldata, value, operation or numeric gas field is an
 error; claim values cannot complete those fields. Explicit null is not omission.
+
+For scripts that submit this request instead of exporting it, the optional
+run setting `capture = "safe-utils"` captures the request at the supported
+`solidity-http` curl transport. It does not change this reader's field rules.
+Each request is bound to a claimed Safe and nonce, the chain comes from the
+pinned RPC run, and every captured request must be claimed. The logical
+`output_path` is not read from the producer checkout. See the
+[runner integration and limits](../README.md#capturing-safe-utils-proposals-without-changing-the-producer)
+and [M0 example](../attest.capture.example.toml). Transport capture does not
+restrict arbitrary network or FFI activity in producer code.
 
 Only signed fields, `safe`, `chainId`, `sender`, `signature`,
 `origin` and the two hash aliases are accepted at the root. Live response fields
@@ -97,10 +108,10 @@ transaction. The Safe and chain are reconciled with the claim when supplied. Saf
 version comes only from the claim (default 1.3.0); request-level `safeVersion`
 is not part of these producer schemas and is refused. Numeric and file-size limits are the same as for typed data.
 
-The source must still be written during the reviewed producer run. Libraries
-that build a request only in memory need a deterministic export hook; this reader
-does not enable FFI, bypass their broadcast guards, or run a signing path to
-extract a request. It preserves already-built outer MultiSend calldata and never
+The source must be written or captured during the reviewed producer run.
+Libraries that build a request only in memory need an export hook or the
+explicit runner capture mode above. The reader itself does not enable FFI or
+run a signing path. It preserves already-built outer MultiSend calldata and never
 folds the request as a batch. Canonical bytes, wire format and execution cost
 remain the same as for an equivalent flat SafeTx. `derive.sh -` is the shared
 cast derivation used to check metadata hashes from canonical JSON on stdin.

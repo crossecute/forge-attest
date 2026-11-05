@@ -1,7 +1,8 @@
 # A claim covering several Safe transactions from one producer commit.
 #
 # Producer keys go at the top. Each [[run]] is one `forge script` call, and each
-# [[run.claim]] under it is one output file that call writes. Every file a run
+# [[run.claim]] under it is one output file that call writes (or an intercepted
+# request with capture = "safe-utils"; see attest.capture.example.toml). Every file a run
 # writes outside forge's build directories must be claimed or listed in
 # `unclaimed`, so no transaction is produced and then left out of review.
 #

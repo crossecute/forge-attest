@@ -28,9 +28,12 @@
 #                  { version, chainId, createdAt, meta, transactions: [
 #                      { to, value?, data?, operation? }, ... ] }
 #                A batch may declare a Safe address. Nonce and gas fields
-#                must be supplied via flags. Multi-transaction batches are packed
-#                into a single `multiSend(bytes)` delegatecall exactly as the Safe
-#                UI does, which is what the owners actually sign.
+#                must be supplied via flags. An entry may repeat them (as
+#                protocol-kit's SafeTransactionData does); each must then equal
+#                the bound value, and a nonce of 0 is accepted as a placeholder.
+#                Multi-transaction batches are packed into a single
+#                `multiSend(bytes)` delegatecall exactly as the Safe UI does,
+#                which is what the owners actually sign.
 #
 #   tx-array     A bare JSON array of { to, value?, data?, operation? }.
 #                Treated the same as tx-builder, with chainId supplied via flags.
@@ -295,6 +298,38 @@ else
 
   tx_count=$(printf '%s' "$batch_json" | jq 'length')
   (( tx_count > 0 )) || die "batch contains no transactions"
+
+  # An entry may carry SafeTx fields, as protocol-kit's SafeTransactionData does.
+  # The batch reads only to/value/data/operation from it, so a different gas or
+  # nonce would otherwise vanish from the hash. Each one must agree with the
+  # value the transaction is bound to (a nonce of 0 is the placeholder
+  # Transaction Builder producers write). test/SafeTx.sol requireEntryBindings
+  # applies the same rule.
+  while IFS=$'\t' read -r idx field raw; do
+    [[ -n "$field" ]] || continue
+    [[ "$raw" != null ]] || die "transaction #$idx carries a null $field"
+    case "$field" in
+      gasToken|refundReceiver)
+        want=$([[ "$field" == gasToken ]] && printf '%s' "$gas_token" || printf '%s' "$refund_receiver")
+        [[ "$(norm_addr "$raw")" == "$want" ]] \
+          || die "transaction #$idx carries $field $raw, but the transaction is bound to $want"
+        ;;
+      *)
+        case "$field" in
+          safeTxGas) want="$safe_tx_gas" ;;
+          baseGas)   want="$base_gas" ;;
+          gasPrice)  want="$gas_price" ;;
+          nonce)     want="$nonce" ;;
+        esac
+        got=$(norm_uint "$raw")
+        [[ "$got" == "$want" || ( "$field" == nonce && "$got" == 0 ) ]] \
+          || die "transaction #$idx carries $field $got, but the transaction is bound to $want"
+        ;;
+    esac
+  done < <(jq_root -r "
+    [ $txs_expr | to_entries[] | .key as \$i | .value | to_entries[]
+      | select(.key | IN(\"safeTxGas\",\"baseGas\",\"gasPrice\",\"gasToken\",\"refundReceiver\",\"nonce\"))
+      | [\$i, .key, (.value | tostring)] | @tsv ] | .[]")
 
   # Descriptor encoding requires the explicit static-v1 profile. The ordinary
   # reader must not turn a method without calldata into an empty call.
