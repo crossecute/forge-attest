@@ -289,7 +289,7 @@ library SafeTxLib {
         return t;
     }
 
-    function requireKeys(string memory json, string memory at, string memory expected) internal view {
+    function requireKeys(string memory json, string memory at, string memory expected) internal pure {
         string[] memory keys = vm.parseJsonKeys(json, at);
         string[] memory want = vm.parseJsonStringArray(expected, "$");
         require(keys.length == want.length, "SafeTxLib: unexpected object keys");
@@ -303,6 +303,7 @@ library SafeTxLib {
     }
 
     function readEip712(string memory json, Binding memory b, string memory profile) internal view returns (SafeTx memory t) {
+        require(bytes(json).length <= 1048576, "SafeTxLib: reader input exceeds 1 MiB");
         require(bytes(profile).length == 0 || _is(profile, "safe") || _is(profile, "safe-utils"), "SafeTxLib: unknown typed-data profile");
         requireKeys(json, "$", '["domain","message","primaryType","types"]');
         require(_is(vm.parseJsonString(json, ".primaryType"), "SafeTx"), "SafeTxLib: primaryType is not SafeTx");
@@ -321,12 +322,29 @@ library SafeTxLib {
         }
         requireKeys(json, ".message", '["to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce"]');
         t.safe = vm.parseJsonAddress(json, ".domain.verifyingContract");
-        t.chainId = vm.parseJsonUint(json, ".domain.chainId");
+        t.chainId = strictUint(json, ".domain.chainId");
         t.safeVersion = bytes(b.safeVersion).length == 0 ? "1.3.0" : b.safeVersion;
+        validateSignedFields(json, ".message");
         t = readSignedFields(json, ".message", t);
         require(t.safe != address(0) && t.chainId != 0, "SafeTxLib: missing Safe or chain");
         require(b.safe == address(0) || b.safe == t.safe, "SafeTxLib: safe mismatch");
         require(b.chainId == 0 || b.chainId == t.chainId, "SafeTxLib: chain mismatch");
+    }
+
+    function strictUint(string memory json, string memory path) internal view returns (uint256 result) {
+        bytes memory raw = bytes(vm.parseJsonString(json, path));
+        require(raw.length > 0 && raw.length <= 78, "SafeTxLib: invalid decimal integer");
+        require(raw.length == 1 || raw[0] != "0", "SafeTxLib: noncanonical decimal integer");
+        for (uint256 i = 0; i < raw.length; i++) require(raw[i] >= "0" && raw[i] <= "9", "SafeTxLib: invalid decimal integer");
+        result = vm.parseUint(string(raw));
+    }
+
+    function validateSignedFields(string memory json, string memory at) internal view {
+        string[6] memory uints = ["value","operation","safeTxGas","baseGas","gasPrice","nonce"];
+        for (uint256 i = 0; i < uints.length; i++) strictUint(json, string.concat(at, ".", uints[i]));
+        bytes memory data = bytes(vm.parseJsonString(json, string.concat(at, ".data")));
+        require(data.length >= 2 && data[0] == "0" && data[1] == "x" && data.length % 2 == 0, "SafeTxLib: invalid signed data");
+        vm.parseJsonBytes(json, string.concat(at, ".data"));
     }
 
     function _checkType(string memory json, string memory base, uint256 i, string memory name, string memory typ) private view {
@@ -351,7 +369,15 @@ library SafeTxLib {
         require(bytes(profile).length == 0, "SafeTxLib: profile unsupported for format");
         require(bytes(format).length == 0 || _is(format, "auto") || _is(format, "safe-tx") ||
             _is(format, "call") || _is(format, "tx-builder") || _is(format, "tx-array"), "SafeTxLib: unknown format");
-        return readAny(json, b);
+        if (bytes(format).length != 0 && !_is(format, "auto")) {
+            bool batch = vm.keyExistsJson(json, ".transactions");
+            bool array_ = vm.keyExistsJson(json, "[0].to");
+            bool call_ = vm.keyExistsJson(json, ".to") && !bindsSafeTx(json);
+            require((_is(format, "tx-builder") && batch) || (_is(format, "tx-array") && array_) ||
+                (_is(format, "call") && call_) || (_is(format, "safe-tx") && !typed && !batch && !array_ && !call_),
+                "SafeTxLib: explicit format does not match input");
+        }
+        return _readLegacy(json, b);
     }
 
     /// @notice Read a Safe{Wallet} Transaction Builder batch (`.transactions`) or
@@ -422,6 +448,10 @@ library SafeTxLib {
 
     /// @notice Read any supported shape and fold it into the SafeTx to be signed.
     function readAny(string memory json, Binding memory b) internal view returns (SafeTx memory) {
+        return readWithFormat(json, b, "auto", "");
+    }
+
+    function _readLegacy(string memory json, Binding memory b) private view returns (SafeTx memory) {
         if (vm.keyExistsJson(json, ".transactions[0].to") || vm.keyExistsJson(json, "[0].to")) {
             address declared = readSafeAddress(json);
             // Disagreement between the file and the config is a tampering signal,

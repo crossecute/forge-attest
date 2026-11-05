@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 
+reader_normalize() { # fixture, format, profile, canonical path, extra normalize flags...
+  local fixture="$1" format="$2" profile="$3" canonical="$4"; shift 4
+  if ! bash "$NORMALIZE" --input "$FIX/$fixture" --format "$format" --profile "$profile" "$@" >"$canonical" 2>"$TMP/error"; then
+    fail "$fixture normalization"
+    cat "$TMP/error" >&2
+    return 1
+  fi
+}
+
 reader_reject() { # label, jq mutation, fixture, format, profile
   local label="$1" mutation="$2" fixture="$3" format="$4" profile="${5:-}"
   jq "$mutation" "$FIX/$fixture" >"$TMP/negative.json"
@@ -11,9 +20,7 @@ reader_reject() { # label, jq mutation, fixture, format, profile
 reader_cross() { # fixture, format, profile, extra normalize flags...
   local fixture="$1" format="$2" profile="$3"; shift 3
   local canonical="$TMP/reader-canonical.json" hash
-  if ! bash "$NORMALIZE" --input "$FIX/$fixture" --format "$format" --profile "$profile" "$@" >"$canonical" 2>"$TMP/error"; then
-    fail "$fixture normalization: $(cat "$TMP/error")"; return
-  fi
+  reader_normalize "$fixture" "$format" "$profile" "$canonical" "$@" || return 1
   hash=$(bash "$ROOT/lib/derive.sh" "$canonical" | sed -n 's/^SAFE_TX_HASH=//p')
   mkdir -p "$ROOT/out"
   cp "$FIX/$fixture" "$ROOT/out/reader-input.json"
@@ -29,6 +36,7 @@ reader_cross() { # fixture, format, profile, extra normalize flags...
 reader_e2e() { # fixture, format, profile, extra normalize flags...
   local fixture="$1" format="$2" profile="$3"; shift 3
   local producer="$TMP/producer-$format" canonical="$TMP/e2e-$format.json" commit hash digest output
+  reader_normalize "$fixture" "$format" "$profile" "$canonical" "$@" || return 1
   mkdir -p "$producer/script"
   cp "$ROOT/foundry.toml" "$producer/foundry.toml"
   sed -i 's/test = "test"/test = "script"/; s/src = "test"/src = "script"/' "$producer/foundry.toml"
@@ -49,7 +57,6 @@ EOF
   git -C "$producer" add -A
   git -C "$producer" -c user.name=test -c user.email=test@example.invalid commit --quiet -m 'test: write reader fixture'
   commit=$(git -C "$producer" rev-parse HEAD)
-  bash "$NORMALIZE" --input "$FIX/$fixture" --format "$format" --profile "$profile" "$@" >"$canonical" 2>"$TMP/error"
   hash=$(bash "$ROOT/lib/derive.sh" "$canonical" | sed -n 's/^SAFE_TX_HASH=//p')
   digest=$(sha256sum "$canonical" | cut -d' ' -f1)
   cat >"$TMP/e2e-$format.toml" <<EOF

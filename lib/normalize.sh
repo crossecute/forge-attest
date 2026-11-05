@@ -165,8 +165,6 @@ J=$(cat "$INPUT")
 jq_root() { printf '%s' "$J" | jq "$@"; }
 jget() { printf '%s' "$J" | jq -r "$1 // empty" 2>/dev/null || true; }
 
-source "$NORMALIZE_DIR/readers.sh"
-
 # --- format detection ---------------------------------------------------------
 # An object with `to` is `call` when it carries none of these, `safe-tx` when it
 # carries any. A partial SafeTx is then refused below rather than completed from
@@ -196,6 +194,7 @@ case "$FORMAT" in safe-tx|safe-eip712|call|tx-builder|tx-array) ;; *) die "unkno
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
 if [[ "$FORMAT" == "safe-eip712" ]]; then
+  source "$NORMALIZE_DIR/readers.sh"
   reader_eip712
 elif [[ -n "$PROFILE" ]]; then
   die "--profile is not supported for $FORMAT"

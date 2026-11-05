@@ -27,3 +27,10 @@ CASES
 reader_reject "unknown profile" '.' safe-eip712.json safe-eip712 wrong
 reader_reject "missing domain needs the explicit safe-utils profile" '.' safe-eip712-safe-utils.json safe-eip712
 reader_e2e safe-eip712.json safe-eip712 ""
+
+reader_cross safe-eip712.json safe-eip712 ""
+if ATTEST_JSON=out/reader-input.json ATTEST_INPUT_FORMAT=safe-eip712 ATTEST_NONCE=0 \
+   ATTEST_EXPECTED_SAFE_TX_HASH=0xd0e33f3b88aceb5122db6ad935c1d709c7602f8ed92fc6b27bdd507902bdf534 \
+   forge test --root "$ROOT" --match-contract AttestTest -q >"$TMP/binding.log" 2>&1; then
+  fail "Solidity refuses an explicitly conflicting zero nonce"
+else pass "Solidity refuses an explicitly conflicting zero nonce"; fi

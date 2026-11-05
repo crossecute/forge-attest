@@ -2,6 +2,7 @@
 
 # Loaded by normalize.sh; readers transform the in-memory JSON, never the source file.
 reader_eip712() {
+  reader_size_limit
   case "$PROFILE" in ""|safe|safe-utils) ;; *) die "unknown safe-eip712 profile: $PROFILE" ;; esac
   jq_root -e --slurpfile schema "$NORMALIZE_DIR/safe-tx-types.json" --arg profile "$PROFILE" '
     (keys == ["domain","message","primaryType","types"]) and
@@ -31,5 +32,11 @@ reader_signed_fields() {
     cast to-uint256 "$n" >/dev/null 2>&1 || die "$key exceeds uint256"
   done
   [[ "$(jget '.chainId')" != 0 ]] || die "chainId must be positive"
-  [[ "${J,,}" != "" ]] || die "missing transaction"
+  [[ "$(jget .safe | tr A-F a-f)" != 0x0000000000000000000000000000000000000000 ]] || die "Safe address must not be zero"
+}
+
+reader_size_limit() {
+  local size
+  size=$(wc -c <"$INPUT")
+  (( size <= 1048576 )) || die "reader input exceeds 1 MiB"
 }
