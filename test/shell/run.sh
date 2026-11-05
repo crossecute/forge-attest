@@ -369,6 +369,62 @@ assert_contains "a malformed parent hash is refused" \
   "$(bash "$NESTED" --parent-safe "$SAFE" --parent-hash 0xdead --child-safe "$CHILD" \
        --child-nonce 7 --chain-id 1 2>&1 >/dev/null)" "must be a 32-byte hash"
 
+group "nested.sh: the preimage-suffix approval"
+
+# An executed approval on Ethereum (Safe 0xb291…Afef, nonce 205) is the plain call
+# followed by the parent transaction. Rebuilding it from the parent must give the
+# same bytes and the same hash.
+RC_SAFE="0x47c71dFEB55Ebaa431Ae3fbF99Ea50e0D3d30fA8"
+RC_HASH="0x0ea9a8fed74bc267e88a5de190ca88a3c63b5963784f50176bfd0f4fb523f8e4"
+RC_CHILD="0xb291232F480F41c75802C4a60F1D2AC03404Afef"
+suffix_approval() { bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" \
+  --child-safe "$RC_CHILD" --child-nonce 205 --chain-id 1 --approval preimage-suffix \
+  --parent-canonical "${PARENT_FILE:-$FIX/nested-preimage-parent.json}" "$@"; }
+suffix_approval >"$TMP/child-suffix.json"
+assert_eq "the suffix approval equals the executed calldata" \
+  "$(jq -r .data "$TMP/child-suffix.json")" "$(cat "$FIX/nested-preimage-child-205.hex")"
+assert_eq "…and hashes to the executed safeTxHash" \
+  "$(safe_tx_hash "$TMP/child-suffix.json")" \
+  "0xcce0f737311aecf1b4a54acae4d57231d60c435e764e3cbc924a9a4a15f707cb"
+assert_eq "…which is not the plain approval's hash" \
+  "$(bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 1 --approval plain | { cat >"$TMP/plain205.json"; safe_tx_hash "$TMP/plain205.json"; })" \
+  "0x923b5ac925dd0c5384893336eb7f9f7408d59a776eb8881bb0d6883d2eb2db9c"
+
+# The hand-built encoding must equal cast's, including padding of data that is not
+# a whole number of words, a delegatecall, value, gas fields and a gas token.
+jq -n '{safe:"0x47c71dfeb55ebaa431ae3fbf99ea50e0d3d30fa8", chainId:"1", safeVersion:"1.3.0",
+  to:"0x40a2accbd92bca938b02010e17a5b8929b49130d", value:"5", data:("0x"+("ab"*33)), operation:"1",
+  safeTxGas:"3", baseGas:"4", gasPrice:"5", gasToken:"0x00000000000000000000000000000000000000aa",
+  refundReceiver:"0x00000000000000000000000000000000000000bb", nonce:"9"}' >"$TMP/odd-parent.json"
+for f in "$FIX/nested-preimage-parent.json" "$TMP/odd-parent.json"; do
+  PARENT_FILE="$f" suffix_approval >"$TMP/suffix-case.json"
+  mine=$(jq -r .data "$TMP/suffix-case.json")
+  want=$(jq -r '"0xd4d9bdcd'"${RC_HASH#0x}"'fb4e87b0" + ""' "$TMP/suffix-case.json")$(cast abi-encode \
+    "f((uint256,address,uint256,address,uint256,bytes,uint8,uint256,uint256,uint256,address,address)[])" \
+    "[($(jq -r '[.chainId, .safe, .nonce, .to, .value, .data, .operation, .safeTxGas, .baseGas, .gasPrice, .gasToken, .refundReceiver] | join(",")' "$f"))]" | sed 's/^0x//')
+  assert_eq "the hand-built suffix equals cast abi-encode ($(basename "$f"))" "$mine" "$want"
+done
+
+assert_contains "preimage-suffix needs the parent transaction" \
+  "$(bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 1 --approval preimage-suffix 2>&1 >/dev/null)" "needs --parent-canonical"
+assert_contains "…and it must be for the same Safe" \
+  "$(bash "$NESTED" --parent-safe "$SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 1 --approval preimage-suffix \
+       --parent-canonical "$FIX/nested-preimage-parent.json" 2>&1 >/dev/null)" "not for --parent-safe"
+assert_contains "…and the same chain" \
+  "$(bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 8453 --approval preimage-suffix \
+       --parent-canonical "$FIX/nested-preimage-parent.json" 2>&1 >/dev/null)" "not for --chain-id"
+assert_contains "the plain approval takes no parent transaction" \
+  "$(bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 1 --parent-canonical "$FIX/nested-preimage-parent.json" 2>&1 >/dev/null)" \
+  "only applies to --approval preimage-suffix"
+assert_contains "an unknown approval profile is refused" \
+  "$(bash "$NESTED" --parent-safe "$RC_SAFE" --parent-hash "$RC_HASH" --child-safe "$RC_CHILD" \
+       --child-nonce 205 --chain-id 1 --approval other 2>&1 >/dev/null)" "must be plain or preimage-suffix"
+
 # ------------------------------------------------------------ 3. end-to-end run
 
 group "attest.sh: end-to-end against a batch-emitting producer"
@@ -761,6 +817,28 @@ sed 's|^child_nonce   = "7"|child_nonce   = "8"|' "$TMP/e2e-nested.toml" >"$TMP/
 assert_ne "re-binding the approval to another child nonce changes what is signed" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nested.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')" \
   "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nonce8.toml" 2>&1 | grep -oE 'signs    : 0x[a-f0-9]{64}')"
+
+# The suffix profile changes what the child's owners sign, and nothing else.
+sed 's|^child_nonce   = "7"|child_nonce   = "7"\nchild_approval = "preimage-suffix"|' "$TMP/e2e-nested.toml" >"$TMP/e2e-suffix.toml"
+suffix_out=$(bash "$ROOT/attest.sh" --config "$TMP/e2e-suffix.toml" --json 2>"$TMP/e2e-suffix.err")
+suffix_rc=$?
+if [[ $suffix_rc -eq 0 ]]; then pass "a preimage-suffix nested claim is ATTESTED"
+else fail "a preimage-suffix nested claim is ATTESTED"$'\n'"$(sed 's/^/      /' "$TMP/e2e-suffix.err")"; fi
+assert_eq "…recording the profile in the verdict" "$(jq -r .nested.approval <<<"$suffix_out")" "preimage-suffix"
+assert_eq "…with Solidity agreeing on the approval" \
+  "$(grep -c 'Solidity agrees with cast on the approval' "$TMP/e2e-suffix.err")" "1"
+assert_ne "…signing a different transaction from the plain approval" \
+  "$(jq -r .nested.safe_tx <<<"$suffix_out")" \
+  "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nested.toml" --json 2>/dev/null | jq -r .nested.safe_tx)"
+assert_eq "a plain claim records the plain profile" \
+  "$(bash "$ROOT/attest.sh" --config "$TMP/e2e-nested.toml" --json 2>/dev/null | jq -r .nested.approval)" "plain"
+
+sed 's|^child_nonce   = "7"|child_nonce   = "7"\nchild_approval = "other"|' "$TMP/e2e-nested.toml" >"$TMP/e2e-badapproval.toml"
+assert_contains "an unknown child_approval is refused" "$(claim_err "$TMP/e2e-badapproval.toml")" \
+  "child_approval must be plain or preimage-suffix"
+{ cat "$TMP/e2e.toml"; echo 'child_approval = "preimage-suffix"'; } >"$TMP/e2e-nochild.toml"
+assert_contains "child_approval without a child_safe is refused" "$(claim_err "$TMP/e2e-nochild.toml")" \
+  "needs child_safe"
 
 # ------------------------------------------------------------ propose.sh
 

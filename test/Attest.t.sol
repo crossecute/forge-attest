@@ -28,6 +28,7 @@ import {Vm, SafeTxLib} from "./SafeTx.sol";
 ///           ATTEST_FORCE_MULTISEND         "1" to wrap a single-transaction batch
 ///           ATTEST_CHILD_SAFE              child Safe approving on the parent (optional)
 ///           ATTEST_CHILD_NONCE             that child's nonce
+///           ATTEST_CHILD_APPROVAL          "" or plain, or preimage-suffix (optional)
 contract AttestTest {
     using SafeTxLib for SafeTxLib.SafeTx;
 
@@ -74,9 +75,15 @@ contract AttestTest {
         // read back from it, so the two remain a check on each other.
         address child = _envAddress("ATTEST_CHILD_SAFE");
         if (child != address(0)) {
-            SafeTxLib.SafeTx memory approval = SafeTxLib.approvalTx(
-                b.safe, computed, child, _requiredEnvUint("ATTEST_CHILD_NONCE"), t.chainId, b.safeVersion
-            );
+            string memory profile = vm.envOr("ATTEST_CHILD_APPROVAL", string(""));
+            uint256 childNonce = _requiredEnvUint("ATTEST_CHILD_NONCE");
+            SafeTxLib.SafeTx memory approval;
+            if (keccak256(bytes(profile)) == keccak256("preimage-suffix")) {
+                approval = SafeTxLib.approvalTxWithPreimage(t, computed, child, childNonce, b.safeVersion);
+            } else {
+                require(bytes(profile).length == 0 || keccak256(bytes(profile)) == keccak256("plain"), "unknown child_approval");
+                approval = SafeTxLib.approvalTx(b.safe, computed, child, childNonce, t.chainId, b.safeVersion);
+            }
             vm.writeFile("out/solidity-child-safe-tx-hash.txt", vm.toString(approval.hash()));
         }
 

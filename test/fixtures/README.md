@@ -16,6 +16,8 @@ from Solidity and `test/shell/run.sh` from bash; both assert the same hashes.
 | `tx-builder-zksync-era.json` | `tx-builder` | The Frax batch re-pointed at chain 324, where the canonical MultiSendCallOnly is not what Safe{Wallet} uses. Must be **refused** unless `multisend_address` is named. |
 | `tx-array.json` | `tx-array` | A bare array with no envelope, so `chainId` has to come from config. |
 | `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected** by the ordinary reader; descriptor encoding requires the explicit static-v1 profile. |
+| `nested-preimage-parent.json` | canonical `SafeTx` | The Aave v4 Risk Council transaction at Safe nonce 447 (`0x47c7…0fA8`, Ethereum, executed in block 26337526, `safeTxHash` `0x0ea9a8fe…8e4`) in `forge-attest`'s canonical form. |
+| `nested-preimage-child-205.hex` | calldata | The calldata of the approval Safe `0xb291…Afef` executed at its nonce 205 for that transaction, from the Safe Transaction Service on 2026-11-06 (`safeTxHash` `0xcce0f737…07cb`). No trailing newline. `child_approval = "preimage-suffix"` must rebuild it exactly. |
 | `tx-builder-delegatecall.json` | `tx-builder` | A batch with an inner `operation: 1`. Must be **rejected** under MultiSendCallOnly and accepted with an explicit `--multisend`. |
 
 ## Provenance of `tx-builder-frax-optimism.json`
