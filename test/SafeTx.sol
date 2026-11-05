@@ -413,6 +413,7 @@ library SafeTxLib {
         if (b.safe == address(0)) b.safe = declared;
         uint256 chain = vm.keyExistsJson(json, ".chainId") ? strictUint(json, ".chainId") : 0;
         require(b.chainId == 0 || chain == 0 || b.chainId == chain, "SafeTxLib: chain mismatch");
+        requireEntryBindings(json, ".transactions", n, b);
         return toSafeTx(txs, b, chain);
     }
 
@@ -749,7 +750,9 @@ library SafeTxLib {
                 "SafeTxLib: safe address mismatch between JSON and config"
             );
             if (b.safe == address(0)) b.safe = declared;
-            return toSafeTx(readBatch(json), b, readChainId(json));
+            InnerTx[] memory txs = readBatch(json);
+            requireEntryBindings(json, vm.keyExistsJson(json, ".transactions[0].to") ? ".transactions" : "", txs.length, b);
+            return toSafeTx(txs, b, readChainId(json));
         }
         if (vm.keyExistsJson(json, ".to") && !bindsSafeTx(json)) {
             return toSafeTx(readCall(json), b, 0);
@@ -758,6 +761,41 @@ library SafeTxLib {
     }
 
     // ----------------------------------------------------------------- helpers
+
+    /// @notice Refuse a batch entry whose SafeTx fields disagree with the binding.
+    /// @dev An entry may carry the fields protocol-kit's SafeTransactionData has.
+    ///      The readers take only to/value/data/operation from it, so a different
+    ///      gas or nonce would otherwise vanish from the hash. A nonce of 0 is the
+    ///      placeholder Transaction Builder producers write. Mirrors the check in
+    ///      lib/normalize.sh; the two must agree.
+    function requireEntryBindings(string memory json, string memory base, uint256 n, Binding memory b)
+        internal view
+    {
+        for (uint256 i = 0; i < n; i++) {
+            string memory at = string.concat(base, "[", vm.toString(i), "]");
+            _entryUint(json, at, ".safeTxGas", b.safeTxGas, false);
+            _entryUint(json, at, ".baseGas", b.baseGas, false);
+            _entryUint(json, at, ".gasPrice", b.gasPrice, false);
+            _entryUint(json, at, ".nonce", b.nonce, true);
+            _entryAddress(json, at, ".gasToken", b.gasToken);
+            _entryAddress(json, at, ".refundReceiver", b.refundReceiver);
+        }
+    }
+
+    function _entryUint(string memory json, string memory at, string memory field, uint256 want, bool zeroOk)
+        private view
+    {
+        string memory path = string.concat(at, field);
+        if (!vm.keyExistsJson(json, path)) return;
+        uint256 got = vm.parseJsonUint(json, path);
+        require(got == want || (zeroOk && got == 0), "SafeTxLib: batch entry field disagrees with the binding");
+    }
+
+    function _entryAddress(string memory json, string memory at, string memory field, address want) private view {
+        string memory path = string.concat(at, field);
+        if (!vm.keyExistsJson(json, path)) return;
+        require(vm.parseJsonAddress(json, path) == want, "SafeTxLib: batch entry field disagrees with the binding");
+    }
 
     /// @dev One `{ to, value?, data?, operation? }` entry at JSON path `at`.
     function _readInner(string memory json, string memory at) private view returns (InnerTx memory) {
