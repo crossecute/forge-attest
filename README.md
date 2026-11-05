@@ -262,6 +262,20 @@ in from the claim. All scalars are quoted strings so large integers survive JSON
 }
 ```
 
+### `safe-eip712`: full SafeTx typed data
+
+A `{ types, primaryType, domain, message }` object. The Safe comes from
+`domain.verifyingContract`, the chain from `domain.chainId`, and all signed fields
+from the complete `message`. The outer transaction is preserved without batch
+folding. See the [fixture](test/fixtures/safe-eip712.json) and
+[reader profiles and limits](docs/producer-readers.md).
+
+The default `input_profile = "safe"` requires the exact Safe domain type;
+`input_profile = "safe-utils"` also accepts the omitted explicit domain type in
+the pinned safe-utils producer. Both reject incomplete signed transactions and
+conflicting claim bindings. Integers above JavaScript's exact numeric range must
+be decimal strings. This does not parse console output or hash-only signing data.
+
 ### `call`: just the call
 
 An object with the call and none of the `SafeTx` binding fields:

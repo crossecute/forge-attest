@@ -12,6 +12,8 @@
 #                `safeVersion` and `data` must be present: a missing one is an
 #                error, never filled in from flags.
 #
+#   safe-eip712  A complete SafeTx typed-data envelope; see docs/producer-readers.md.
+#
 #   call         A flat { to, value?, data?, operation? } with none of the SafeTx
 #                binding fields. Folded exactly as a one-entry tx-array, so the
 #                Safe, nonce, chainId and gas fields all come from flags.
@@ -39,7 +41,8 @@
 #
 # Options:
 #   --input PATH            source JSON (required)
-#   --format FMT            auto (default) | safe-tx | call | tx-builder | tx-array
+#   --format FMT            auto (default) | safe-tx | safe-eip712 | call | tx-builder | tx-array
+#   --profile NAME          safe-eip712: safe (default) | safe-utils
 #   --safe ADDR             Safe address        (required for batches and calls)
 #   --nonce N               Safe nonce          (required for batches and calls)
 #   --chain-id N            chain id            (required if absent from JSON)
@@ -186,7 +189,7 @@ if [[ "$FORMAT" == "auto" ]]; then
   elif [[ "$root_type" == "object" && -n "$(jget '.to')" ]]; then
     if binds_safe_tx; then FORMAT="safe-tx"; else FORMAT="call"; fi
   else
-    die "cannot detect input format; pass --format safe-tx|call|tx-builder|tx-array"
+    die "cannot detect input format; pass --format safe-tx|safe-eip712|call|tx-builder|tx-array"
   fi
 fi
 
