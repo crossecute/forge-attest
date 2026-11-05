@@ -155,15 +155,15 @@ norm_uint() {
   printf '%s' "$n"
 }
 
-# Config vs JSON reconciliation: both may supply a value, but they must agree.
+# Reconcile JSON with another declaration or config; supplied values must agree.
 # Silently preferring one over the other would hide exactly the tampering this
 # tool exists to detect.
 reconcile() {
-  local what="$1" from_json="${2:-}" from_flag="${3:-}" jn fn
+  local what="$1" from_json="${2:-}" from_flag="${3:-}" other_source="${4:-config}" jn fn
   jn=$(lower "$from_json"); fn=$(lower "$from_flag")
   [[ "$jn" == "null" ]] && jn=""
   if [[ -n "$jn" && -n "$fn" && "$jn" != "$fn" ]]; then
-    die "$what mismatch: JSON says '$from_json' but config says '$from_flag'"
+    die "$what mismatch: JSON says '$from_json' but $other_source says '$from_flag'"
   fi
   printf '%s' "${jn:-$fn}"
 }
@@ -235,7 +235,7 @@ for safe_key in "${safe_keys[@]}"; do
   declared_safe=$(jget "$safe_key")
   [[ -n "$declared_safe" ]] || continue
   declared_safe=$(norm_addr "$declared_safe")
-  json_safe=$(reconcile "safe address" "$json_safe" "$declared_safe")
+  json_safe=$(reconcile "safe address" "$json_safe" "$declared_safe" "another JSON declaration")
 done
 safe=$(reconcile "safe address" "$json_safe" "$SAFE")
 nonce=$(reconcile "nonce" "$(jget '.nonce')" "$NONCE")

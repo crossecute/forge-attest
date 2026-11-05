@@ -168,9 +168,11 @@ assert_eq "all Safe declarations agree regardless of address casing" \
 for safe_path in '["safe"]' '["safeAddress"]' '["meta","createdFromSafeAddress"]'; do
   jq --argjson path "$safe_path" 'setpath($path; "0x000000000000000000000000000000000000b0b0")' \
     "$TMP/agreeing-safe.json" >"$TMP/conflicting-safe.json"
+  conflict_error=$(bash "$NORMALIZE" --input "$TMP/conflicting-safe.json" --nonce 42 2>&1 >/dev/null)
   assert_contains "conflicting $safe_path declaration is rejected without config" \
-    "$(bash "$NORMALIZE" --input "$TMP/conflicting-safe.json" --nonce 42 2>&1 >/dev/null)" \
-    "safe address mismatch"
+    "$conflict_error" "safe address mismatch"
+  assert_contains "conflicting $safe_path declaration identifies the JSON source" \
+    "$conflict_error" "but another JSON declaration says"
 done
 assert_contains "a file declaring no Safe still needs one" \
   "$(bash "$NORMALIZE" --input "$FIX/tx-builder-frax-optimism.json" --nonce 42 2>&1 >/dev/null)" \
