@@ -95,7 +95,8 @@ caller gets both without scraping colours:
 
 A hash that was skipped rather than computed is `""`. An empty `safe_tx_live` means
 the live check did not run, not that it passed. `nested` is `null` unless
-the claim names a child Safe. `proposal` is `null` unless `--attest` signed and
+the claim names a child Safe, and is then `{ "safe", "nonce", "approval", "safe_tx" }`.
+`proposal` is `null` unless `--attest` signed and
 submitted the transaction, and is then `{ "action", "sender", "url" }`, where `url`
 is the submitted transaction's Safe{Wallet} page (for a nested claim, the child's
 approval) or `""` (see below). `failures` lists exactly what a
@@ -616,6 +617,7 @@ Add to any claim:
 ```toml
 child_safe    = "0x<the child Safe>"
 child_nonce   = "7"
+child_approval = "plain"   # or "preimage-suffix", below
 child_network = ""     # set to also check what is queued on the child itself
 expected_child_safe_tx_hash = ""
 ```
@@ -641,6 +643,28 @@ That last line is the part to read carefully. The parent hash binds the parent's
 nonce. If the parent executes anything else first, every stored approval silently
 stops matching, and execution fails as `GS025`, "invalid owner", with nothing in the
 error pointing at the real cause.
+
+### `child_approval = "preimage-suffix"`
+
+Some child Safes send a longer approval: `approveHash(h)` followed by the parent
+transaction, so their owners can read what they approve. On Ethereum, Safe
+`0xb291…Afef` approved the Aave v4 Risk Council transaction at nonce 447 this way; its
+calldata is the plain call, the selector `0xfb4e87b0`, then `abi.encode` of one
+`(chainId, safe, nonce, to, value, data, operation, safeTxGas, baseGas, gasPrice,
+gasToken, refundReceiver)`. The default `plain` builds only the 36-byte call, so
+its hash would not match what that child executed. Set the profile to build the long
+form; `forge-attest` rebuilds the suffix from the parent transaction it
+has already folded, in bash and in Solidity, and checks the two agree. The executed
+approval above reproduces to the byte (`test/fixtures/nested-preimage-child-205.hex`).
+
+`approveHash` reads only its first argument, so the suffix does not change what the
+call does. It is still a claim about what `h` is, which is why it is rebuilt rather
+than read: a suffix describing a different transaction from the one hashed would make
+a signer who reads it approve something else. It adds 2,788 bytes of calldata for a
+2,244-byte parent (the parent's data padded to whole words, plus 16 words of fields
+and offsets), so it grows with the parent. The profile name is recorded as
+`nested.approval` in the `--json` verdict. The selector is a constant:
+the tool that writes it is not known, so a different layout needs its own profile.
 
 **Out of scope:**
 
