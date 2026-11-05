@@ -243,9 +243,40 @@ review decides, and the pin stays a SHA.
 ## Supported producer formats
 
 `forge-attest` reads the JSON shapes below. It detects the format automatically,
-or you name it with `input_format`. Explicit profiles select the supported
-producer variants; package names or version metadata alone do not establish
-compatibility.
+or you name it with `input_format`. Some shapes have more than one supported
+variant. `input_profile` selects the variant and is never inferred, so name the
+format and the profile together. Package names or version metadata alone do not
+establish compatibility.
+
+| `input_format` | Detected when the root… | `input_profile` | Claim must supply, to derive the hash |
+|----------------|-------------------------|-----------------|---------------------------------------|
+| `safe-tx` | is an object with `to` and any Safe field (`safe`, `chainId`, `nonce`, …) | none | nothing |
+| `safe-eip712` | has `types`, `domain`, `message` or `primaryType` | `safe` (default), `safe-utils` | nothing |
+| `safe-service` | has `contractTransactionHash` or `safeTxHash` | `safe` (default), `safe-utils` | `chain_id` if the file omits it; with `safe-utils`, also `safe_address` |
+| `call` | is an object with `to` and no Safe field | none | `safe_address`, `safe_nonce`, `chain_id` |
+| `tx-builder` | is an object with a `transactions` array | `static-v1` for decoded calls | `safe_address` and `safe_nonce`, and `chain_id` if the file omits it |
+| `tx-array` | is a bare array | none | `safe_address`, `safe_nonce`, `chain_id` |
+
+Typed-data and service files carry no Safe version, so it comes from the claim's
+`safe_version` and defaults to `1.3.0`. Set `input_format` and `input_profile` on a
+claim, or once for a run in `[run.defaults]`. A claim can set either to `""` to
+clear the default.
+
+Every format folds into the same canonical `SafeTx`. The same transaction read
+from any of them has the same canonical `sha256`, `safeTxHash` and on-chain cost,
+so changing a producer's output format does not change what you pin. Only the raw
+`expected_output_sha256` depends on the file's bytes.
+
+The file must be written by the producer's script during the run, as for every
+format. A copy committed in the producer repo does not count. To see what a file
+folds into before you pin anything, run the normaliser on it (it needs `cast`):
+
+```bash
+./lib/normalize.sh --input typed-data.json --summary
+./lib/normalize.sh --input request.json --format safe-service --chain-id 1 --summary
+./lib/normalize.sh --input batch.json --profile static-v1 \
+  --safe 0x<safe> --nonce <n> --summary
+```
 
 ### `safe-tx`: a complete transaction
 
@@ -266,29 +297,96 @@ in from the claim. All scalars are quoted strings so large integers survive JSON
 
 ### `safe-eip712`: full SafeTx typed data
 
-A `{ types, primaryType, domain, message }` object. The Safe comes from
-`domain.verifyingContract`, the chain from `domain.chainId`, and all signed fields
-from the complete `message`. The outer transaction is preserved without batch
-folding. See the [fixture](test/fixtures/safe-eip712.json) and
-[reader profiles and limits](docs/producer-readers.md).
+The EIP-712 envelope a signer is asked to sign, written by the producer as one
+JSON object:
 
-The default `input_profile = "safe"` requires the exact Safe domain type;
-`input_profile = "safe-utils"` also accepts the omitted explicit domain type in
-the pinned safe-utils producer. Both reject incomplete signed transactions and
-conflicting claim bindings. Integers above JavaScript's exact numeric range must
-be decimal strings. This does not parse console output or hash-only signing data.
+```json
+{
+  "types": { "EIP712Domain": [ … ], "SafeTx": [ … ] },
+  "primaryType": "SafeTx",
+  "domain": { "chainId": "1", "verifyingContract": "0x<safe>" },
+  "message": {
+    "to": "0x…", "value": "0", "data": "0x…", "operation": "0",
+    "safeTxGas": "0", "baseGas": "0", "gasPrice": "0",
+    "gasToken": "0x0000000000000000000000000000000000000000",
+    "refundReceiver": "0x0000000000000000000000000000000000000000",
+    "nonce": "42"
+  }
+}
+```
+
+The Safe comes from `domain.verifyingContract`, the chain from `domain.chainId`,
+and every signed field from `message`, including the nonce. Deriving the hash
+needs no `safe_address`, `safe_nonce` or `chain_id` from the claim. If it sets one
+anyway, it must agree with the file (`safe_nonce = "0"` against a nonce of 42
+fails). The live check and `--attest` still read `safe_network`, `safe_address` and
+`safe_nonce` from the claim, as for any format. The outer call is kept as written:
+calldata that is already a MultiSend is not unpacked or wrapped again, and
+`batch_mode` has no effect.
+
+```toml
+input_format  = "safe-eip712"
+input_profile = "safe"              # or "safe-utils"
+```
+
+The `safe` profile requires the exact Safe types: `EIP712Domain` is
+`chainId: uint256`, `verifyingContract: address`, and `SafeTx` carries the ten
+signed fields in order. The `safe-utils` profile also accepts the file written by
+the pinned [Recon-Fuzz safe-utils](https://github.com/Recon-Fuzz/safe-utils/blob/637e04202bb9bb879803f6b42137e2d5d035fbe0/src/Safe.sol)
+producer, which leaves out the `EIP712Domain` type. It still derives the same
+two-field domain. Neither profile completes a missing signed field or accepts an
+extra one. Integers above `9007199254740991` must be decimal strings, because a
+larger JSON number has already been rounded.
+
+Not supported: console output, `DataToSign` events, and hash-only `0x1901` data.
+See the [fixture](test/fixtures/safe-eip712.json) and
+[reader profiles and limits](docs/producer-readers.md#safe-eip-712-typed-data).
 
 ### `safe-service`: an exported proposal request
 
-Read a full request written by the producer, with an independently supplied
-`chain_id` if absent. The default `input_profile = "safe"` requires the Safe and
-all signed fields. The explicit `safe-utils` profile permits the omitted Safe
-and two zero gas/refund addresses from the pinned writer; it requires zero gas
-fields and claim Safe/chain bindings. Every carried `contractTransactionHash` or
-`safeTxHash` must match both local derivations. See the
+The body a producer writes to propose a transaction to the Safe Transaction
+Service, saved as a file instead of sent:
+
+```json
+{
+  "safe": "0x<safe>", "to": "0x…", "value": "0", "data": "0x…", "operation": "0",
+  "safeTxGas": "0", "baseGas": "0", "gasPrice": "0",
+  "gasToken": "0x0000000000000000000000000000000000000000",
+  "refundReceiver": "0x0000000000000000000000000000000000000000",
+  "nonce": "42",
+  "sender": "0x…", "signature": "0x",
+  "contractTransactionHash": "0x<safeTxHash>"
+}
+```
+
+This is read as a transaction request, never fetched from the service. The file
+has no chain, so the claim supplies it:
+
+```toml
+input_format  = "safe-service"
+input_profile = "safe"              # or "safe-utils"
+chain_id      = "1"
+```
+
+The `safe` profile needs the Safe and every signed field, including both gas and
+refund addresses. The `safe-utils` profile reads the request written by the pinned
+[Recon-Fuzz safe-utils](https://github.com/Recon-Fuzz/safe-utils/blob/637e04202bb9bb879803f6b42137e2d5d035fbe0/src/Safe.sol#L691-L702)
+writer, which leaves out `safe`, `gasToken` and `refundReceiver`. With it, the claim
+must also set `safe_address`, and `gasToken` and `refundReceiver` are taken as the
+zero address. All gas fields must be zero. A missing nonce, calldata, value,
+operation or numeric gas field fails under both profiles.
+
+`contractTransactionHash` and `safeTxHash` are optional when `input_format` is set.
+A carried one must equal the hash this tool derives (with `cast` and in Solidity),
+and the two must agree with each other. A mismatch fails the run. Fields that only a live response has, such as
+`executionDate`, are refused, and so is a `safeVersion` key (set it in the claim).
+Changing `sender`, `signature` or `origin` changes the raw `sha256` but not the
+canonical transaction.
+
+Libraries that build the request only in memory need an export hook that writes
+it. This reader does not run their signing or broadcast path. See the
 [request fixture](test/fixtures/safe-service.json) and
 [profile requirements](docs/producer-readers.md#exported-safe-service-requests).
-This reads an exported request, not a live service response.
 
 ### `call`: just the call
 
@@ -326,15 +424,70 @@ The shape produced by the Safe UI's "export batch" and by FraxFinance's
 
 ### Decoded Transaction Builder calls: `static-v1`
 
-Set `input_format = "tx-builder"` and `input_profile = "static-v1"` to encode
-`contractMethod` and `contractInputsValues` entries with missing/null calldata.
-The explicit `tx-builder-decoded` format is an alias. The profile supports scalar
-`address`, `bool`, `uint8` and `uint256` arguments, including unnamed inputs;
-other types fail. It independently encodes in shell and Solidity, checks supplied
-data for contradictions, and retains the existing batch/Safe/nonce/gas rules.
-See the [decoded fixture](test/fixtures/tx-builder-decoded.json) and
+Some producers write a batch that describes each call as a method and its input
+values, with no encoded calldata. The ordinary `tx-builder` reader refuses those.
+Opt in with the `static-v1` profile, and `forge-attest` encodes the calls itself:
+
+```json
+{
+  "version": "1.0",
+  "chainId": "1",
+  "meta": { "createdFromSafeAddress": "0x<safe>" },
+  "transactions": [
+    {
+      "to": "0x<token>", "value": "0", "data": null,
+      "contractMethod": {
+        "name": "transfer", "payable": false,
+        "inputs": [ { "name": "to", "type": "address" },
+                    { "name": "amount", "type": "uint256" } ]
+      },
+      "contractInputsValues": { "to": "0x<recipient>", "amount": "1000000" }
+    }
+  ]
+}
+```
+
+```toml
+input_format  = "tx-builder"
+input_profile = "static-v1"
+safe_address  = "0x<safe>"          # optional when meta.createdFromSafeAddress is set
+safe_nonce    = "42"
+```
+
+`input_format = "tx-builder-decoded"` is an alias for the same pair and still needs
+`input_profile = "static-v1"`. Encoded and decoded entries can be mixed in one
+batch. Everything after encoding follows the ordinary batch rules: one call is sent
+directly and several are packed into MultiSend, `batch_mode` and `multisend_address`
+apply, and the Safe, nonce, chain and gas fields are bound as for any batch. The
+same transaction written decoded or encoded has the same canonical hash.
+
+What the profile accepts:
+
+- Argument types `address`, `bool`, `uint8` and `uint256`, and nothing else. Write
+  integers as plain decimal strings, booleans as `true` or `false`, and addresses
+  as full 20-byte hex. Arrays, tuples, `bytes`, `string`, other integer widths and
+  other spellings fail. For those, re-export with encoded calldata and use the
+  ordinary reader.
+- `contractMethod` with `name`, `inputs` and a boolean `payable`. Values come from
+  `contractInputsValues` by name, or by position (`"0"`, `"1"`) for unnamed
+  inputs. A missing, extra or duplicate input name fails. A method with no inputs
+  may leave the values object empty, omitted or null.
+- `CALL` only, and a non-zero `value` to a nonpayable method fails. At most 1 MiB
+  of input, 128 calls per batch and 32 inputs per method.
+- A plain native transfer (no method, no calldata) stays valid.
+
+If an entry has both a method and a non-empty `data` string, the two must encode
+to the same bytes. `data = "0x"` counts as a supplied empty call that contradicts
+a method, so it fails. `null`, omitted or `""` asks for encoding. The shell encodes
+with `cast calldata` and Solidity derives the selector and ABI words from the raw
+descriptor on its own, so neither derivation reuses the other's bytes.
+
+The encoder was compared with the original Safe Transaction Builder field parsers
+from app packages 1.18.3 and 2.1.0 over the supported scalar types, and agreed on
+every vector. That covers the scalar overlap only, not every Transaction Builder
+release. A `txBuilderVersion` in the file's `meta` does not select or certify
+any version. See the [decoded fixture](test/fixtures/tx-builder-decoded.json) and
 [profile limits and version comparisons](docs/producer-readers.md#decoded-transaction-builder-calls).
-The ordinary batch reader is unchanged without this opt-in.
 
 ### `tx-array`: a bare array
 
@@ -814,6 +967,7 @@ hash derivations do not agree.
 ```bash
 forge test            # Solidity: hashing, MultiSend packing, every JSON format
 ./test/shell/run.sh   # bash: normalisation, cast-vs-Solidity, end-to-end runs, --attest
+bash test/shell/readers.sh   # only the typed-data, service and decoded-builder readers
 ```
 
 The shell suite starts two local `anvil` chains for the multi-chain tests, and
@@ -844,6 +998,8 @@ forge-attest/
 ├── attest.batch.example.toml     # a commented claim for a Transaction Builder batch
 ├── attest.runs.example.toml      # a commented config with several runs and claims
 ├── SECURITY.md                   # how to report a vulnerability
+├── docs/
+│   └── producer-readers.md       # typed-data, service and decoded-builder profiles, in detail
 ├── lib/
 │   ├── normalize.sh              # any supported JSON -> canonical SafeTx (check #2)
 │   ├── readers.sh                # typed-data, service and decoded-builder profiles
