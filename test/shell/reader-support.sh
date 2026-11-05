@@ -12,7 +12,7 @@ reader_normalize() { # fixture, format, profile, canonical path, extra normalize
 reader_reject() { # label, jq mutation, fixture, format, profile
   local label="$1" mutation="$2" fixture="$3" format="$4" profile="${5:-}"
   jq "$mutation" "$FIX/$fixture" >"$TMP/negative.json"
-  if bash "$NORMALIZE" --input "$TMP/negative.json" --format "$format" --profile "$profile" >"$TMP/rejected" 2>"$TMP/error"; then
+  if bash "$NORMALIZE" --input "$TMP/negative.json" --format "$format" --profile "$profile" "${@:6}" >"$TMP/rejected" 2>"$TMP/error"; then
     fail "$label"
   else pass "$label"; fi
 }

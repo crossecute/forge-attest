@@ -12,6 +12,8 @@
 #                `safeVersion` and `data` must be present: a missing one is an
 #                error, never filled in from flags.
 #
+#   safe-service Exported service request; explicit safe-utils permits its known omissions.
+#
 #   safe-eip712  A complete SafeTx typed-data envelope; see docs/producer-readers.md.
 #
 #   call         A flat { to, value?, data?, operation? } with none of the SafeTx
@@ -41,8 +43,8 @@
 #
 # Options:
 #   --input PATH            source JSON (required)
-#   --format FMT            auto (default) | safe-tx | safe-eip712 | call | tx-builder | tx-array
-#   --profile NAME          safe-eip712: safe (default) | safe-utils
+#   --format FMT            auto (default) | safe-tx | safe-eip712 | safe-service | call | tx-builder | tx-array
+#   --profile NAME          safe-eip712/safe-service: safe (default) | safe-utils
 #   --safe ADDR             Safe address        (required for batches and calls)
 #   --nonce N               Safe nonce          (required for batches and calls)
 #   --chain-id N            chain id            (required if absent from JSON)
@@ -182,6 +184,8 @@ if [[ "$FORMAT" == "auto" ]]; then
   root_type=$(jq_root -r 'type')
   if [[ "$root_type" == "object" && "$(jq_root 'has("primaryType") or has("domain") or has("message") or has("types")')" == true ]]; then
     FORMAT="safe-eip712"
+  elif [[ "$root_type" == "object" && "$(jq_root 'has("contractTransactionHash") or has("safeTxHash")')" == true ]]; then
+    FORMAT="safe-service"
   elif [[ "$root_type" == "array" ]]; then
     FORMAT="tx-array"
   elif [[ "$root_type" == "object" && "$(jq_root -r '.transactions | type // "none"' 2>/dev/null || true)" == "array" ]]; then
@@ -189,21 +193,24 @@ if [[ "$FORMAT" == "auto" ]]; then
   elif [[ "$root_type" == "object" && -n "$(jget '.to')" ]]; then
     if binds_safe_tx; then FORMAT="safe-tx"; else FORMAT="call"; fi
   else
-    die "cannot detect input format; pass --format safe-tx|safe-eip712|call|tx-builder|tx-array"
+    die "cannot detect input format; pass --format safe-tx|safe-eip712|safe-service|call|tx-builder|tx-array"
   fi
 fi
 
-case "$FORMAT" in safe-tx|safe-eip712|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
+case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
 if [[ "$FORMAT" == "safe-eip712" ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_eip712
+elif [[ "$FORMAT" == "safe-service" ]]; then
+  source "$NORMALIZE_DIR/readers.sh"
+  reader_service
 elif [[ -n "$PROFILE" ]]; then
   die "--profile is not supported for $FORMAT"
 fi
 
-if [[ "$FORMAT" == "safe-tx" || "$FORMAT" == "safe-eip712" ]]; then
+if [[ "$FORMAT" == "safe-tx" || "$FORMAT" == "safe-eip712" || "$FORMAT" == "safe-service" ]]; then
   [[ "$(jq_root -r 'type')" == "object" ]] || die "safe-tx must be an object"
   missing=$(jq_root -r --argjson k "$SAFE_TX_REQUIRED_KEYS" \
     '[$k[] as $f | select(.[$f] == null or .[$f] == "") | $f] | join(", ")')
@@ -242,7 +249,7 @@ gas_token=$(norm_addr "${gas_token:-0x0000000000000000000000000000000000000000}"
 refund_receiver=$(norm_addr "${refund_receiver:-0x0000000000000000000000000000000000000000}")
 
 # --- resolve the payload (to / value / data / operation) ----------------------
-if [[ "$FORMAT" == "safe-tx" || "$FORMAT" == "safe-eip712" ]]; then
+if [[ "$FORMAT" == "safe-tx" || "$FORMAT" == "safe-eip712" || "$FORMAT" == "safe-service" ]]; then
   to=$(norm_addr "$(jget '.to')")
   value=$(norm_uint "$(jq_root -r '(.value // 0) | tostring')")
   data=$(norm_data "$(jq_root -r '(.data // "0x") | tostring')")
@@ -367,11 +374,13 @@ canonical=$(jq -n \
     data:$data, operation:$operation, safeTxGas:$safeTxGas, baseGas:$baseGas,
     gasPrice:$gasPrice, gasToken:$gasToken, refundReceiver:$refundReceiver, nonce:$nonce}')
 
+if [[ "$FORMAT" == "safe-service" ]]; then reader_service_hashes "$canonical"; fi
+
 if [[ "$SUMMARY" == 1 ]]; then
   {
     printf '    format   : %s\n' "$FORMAT"
     printf '    inner tx : %s\n' "$tx_count"
-    if [[ "$FORMAT" != "safe-tx" && "$FORMAT" != "safe-eip712" ]]; then
+    if [[ "$FORMAT" != "safe-tx" && "$FORMAT" != "safe-eip712" && "$FORMAT" != "safe-service" ]]; then
       for (( i = 0; i < tx_count; i++ )); do
         s_to=$(printf '%s' "$batch_json" | jq -r ".[$i].to")
         s_val=$(printf '%s' "$batch_json" | jq -r ".[$i].value")

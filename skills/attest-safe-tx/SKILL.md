@@ -73,3 +73,9 @@ explicit domain type; otherwise use the default `safe` profile. Keep all signed
 fields in the producer output and reconcile claim bindings. See
 `docs/producer-readers.md`. Do not treat console markers or two signing hashes as
 the full envelope.
+
+For an exported service proposal body, use `input_format = "safe-service"` and
+an explicit chain binding if missing. Only opt into the pinned `safe-utils`
+profile when its documented omissions apply. Do not use a downloaded service
+response as the producer artifact or infer a nonce. Both hash aliases are checked
+if present; see `docs/producer-readers.md`.

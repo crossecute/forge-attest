@@ -4,7 +4,7 @@
 #            of SafeTx fields, using `cast`. This is one of forge-attest's two
 #            independent hash derivations (the other is Solidity, in test/).
 #
-# Usage:  derive.sh <safe-tx.json>
+# Usage:  derive.sh <safe-tx.json> (or - to read canonical JSON from stdin)
 # Output: three KEY=VALUE lines matching safe-tx-hashes-util's terminology:
 #           DOMAIN_HASH=0x...     (EIP-712 domain separator)
 #           MESSAGE_HASH=0x...    (hashStruct of the SafeTx)
@@ -15,9 +15,14 @@
 set -euo pipefail
 
 json="${1:?usage: derive.sh <safe-tx.json>}"
-[[ -f "$json" ]] || { echo "derive.sh: no such file: $json" >&2; exit 1; }
+if [[ "$json" == - ]]; then
+  transaction_json=$(cat)
+else
+  [[ -f "$json" ]] || { echo "derive.sh: no such file: $json" >&2; exit 1; }
+  transaction_json=$(cat "$json")
+fi
 
-get() { jq -er "$1" "$json"; }
+get() { jq -er "$1" <<<"$transaction_json"; }
 
 safe=$(get '.safe')
 chainId=$(get '.chainId')

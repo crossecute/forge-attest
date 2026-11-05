@@ -20,6 +20,9 @@ abstract contract ReaderTestBase {
 
     function _reject(string memory json, string memory format, string memory profile) internal {
         SafeTxLib.Binding memory b;
+        b.safe = SAFE;
+        b.chainId = 1;
+        b.nonce = 42;
         (bool ok,) = address(this).call(abi.encodeCall(this.readExternal, (json, b, format, profile)));
         require(!ok, "reader accepted invalid input");
     }

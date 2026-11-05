@@ -48,3 +48,16 @@ chain/uint fields, matching the integer-literal representation emitted by Foundr
 serializers. Its canonical bytes and hash must equal the quoted fixture in both
 readers. The uint256-max test retains quoted strings; the shell continues to
 reject numeric literals above its exact-integer range.
+
+## Service request fixtures
+
+`safe-service.json` is synthetic: the signed fields of `safe-tx-single.json` with
+request metadata, the pinned hash, and no chain/version, following the pinned
+[forge-safe](https://github.com/ind-igo/forge-safe/blob/c4845beebc6653d545a1023643b5be1d9d99369d/src/BatchScript.sol#L265-L284)
+and [Euler](https://github.com/euler-xyz/evk-periphery/blob/dd93a5f518ec0775f1cb87d358fe24b9fb5fbb66/script/utils/SafeUtils.s.sol#L453-L470)
+request shapes. `safe-service-safe-utils.json` additionally omits the Safe and
+zero gas/refund addresses, matching the pinned
+[safe-utils writer](https://github.com/Recon-Fuzz/safe-utils/blob/637e04202bb9bb879803f6b42137e2d5d035fbe0/src/Safe.sol#L691-L702).
+These are not production proposals or real signatures. Both must reproduce the
+existing pinned hash with the correct claim bindings. Negative mutations retain
+valid chain/Safe bindings so a missing binding cannot mask a hash/schema bug.
