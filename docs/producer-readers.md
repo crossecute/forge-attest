@@ -196,3 +196,108 @@ the pinned legacy lockfile. Its pinned top-level encoder versions and captured
 fixtures do not claim that every transitive dependency of the historical app has
 been rebuilt. Running the ordinary regression suite needs no Node dependencies
 or additional source downloads.
+
+## Zeus traces
+
+`input_format = "zeus-traces"` reads the calls of a script built on Zeus's
+[`MultisigBuilder`](https://github.com/Layr-Labs/zeus-templates/blob/b4c42abc64bb7cc414819deb177fa2f924a761a7/src/templates/MultisigBuilder.sol).
+Such a script writes no file. It emits `ZeusRequireMultisig(address, uint8)` and
+makes its calls under `vm.startPrank(multisig)`. The Zeus CLI runs
+`forge script <path> --sig 'execute()' --rpc-url <rpc> -vvvv --json`, reads the
+Safe and call type from that event and the calls from the traces, batches them
+with Safe protocol-kit and proposes the result. This reader does the same from
+the run's own stdout, so the output file is replaced by the run.
+
+```toml
+producer_repo   = "https://github.com/Layr-Labs/eigenx-contracts"
+producer_commit = "f0d751f5c9bc3f7fb42c02646f67e31dbc577467"
+producer_setup  = "git submodule update --init --recursive"
+
+[[run]]
+script     = "script/releases/v1.0.4-init/2-acceptAdminAndSetLimits.s.sol"
+rpc_env    = "MAINNET_RPC_URL"
+fork_block = "23443614"
+
+[run.env]
+ZEUS_ENV = "mainnet"
+ZEUS_ENV_computeOpsMultisig = "0x684cf8978c2815716c85eAa237E311f5a44e9e09"
+# ... every ZEUS_ENV_* and ZEUS_DEPLOYED_* value the script reads
+
+[[run.claim]]
+output_path       = "zeus/2-acceptAdminAndSetLimits"
+input_format      = "zeus-traces"
+safe_version      = "1.4.1"
+multisend_address = "0x38869bf66a61cF6bDB996A6aE40D5853Fd43B526"
+safe_nonce        = "0"
+expected_canonical_sha256 = "<canonical sha256>"
+expected_safe_tx_hash     = "0x9e338be37a1756a80652767968a61be506fce16a0cbbec8d7441ff5e7724f478"
+```
+
+What the claim and the run must provide:
+
+- `fork_block` and `rpc_env`. The Zeus CLI keeps only calls that succeed, so a call
+  that reverts at another block would drop out of the batch without a message. A
+  claim without them is refused when the config is read.
+- The run's `sig` defaults to `execute()`, and `-vvvv` is added so forge prints
+  the traces. Set `sig` for a script with another entry point.
+- Zeus injects `ZEUS_ENV_*` and `ZEUS_DEPLOYED_*` values from its environment
+  metadata. Put the ones the script reads in `[run.env]`, which the verdict
+  records. They decide which contracts the calls go to, so review them like
+  calldata.
+- `multisend_address`, because several calls are batched through the MultiSend
+  that Safe protocol-kit chose. For the executed eigenx transaction that was the
+  plain MultiSend of Safe 1.4.1 (`0x38869bf6…`), not MultiSendCallOnly. No default
+  is guessed for other versions. `safe_nonce` is the Safe's nonce when the
+  transaction was built. `chain_id` defaults to the run's RPC chain, since forge's
+  JSON carries none.
+- `output_path` only names the claim. Nothing is read from the clone at that
+  path, and a script that writes it fails the run. Pin `expected_canonical_sha256`
+  and `expected_safe_tx_hash`. The raw output holds gas figures, so
+  `expected_output_sha256` is not meaningful here.
+
+The reader takes the Safe and the call type (0 for Call, 1 for DelegateCall, applied
+to every inner call) from exactly one `ZeusRequireMultisig` event emitted by the
+script. It then walks the entry call's direct children, in order:
+
+- Reads (`STATICCALL`) and calls to the cheatcode address are skipped.
+- Every other child must be a successful `CALL` whose caller is the multisig.
+  Its target, value and calldata become one batch entry. Values must be within
+  JavaScript's exact integer range, because the Zeus CLI converts them through
+  a JavaScript number.
+- A reverted call, a call made by the script rather than the multisig, a `CREATE`
+  or `DELEGATECALL`, a second execution block (a `setUp` trace), a second event,
+  or no calls at all fails the run. The Zeus CLI would drop or include these
+  without saying so.
+
+Calls made by other contracts during those calls are not batch entries. The
+batch then follows the ordinary rules: one call is sent directly, several are
+packed into `multiSend(bytes)` and delegatecalled. The canonical SafeTx, verdict
+schema and on-chain cost are those of the equivalent `tx-array`.
+
+**Differs from the Zeus CLI on current Foundry.** The CLI keeps calls whose trace
+caller is the script contract, working around
+[foundry-rs/foundry#10050](https://github.com/foundry-rs/foundry/issues/10050).
+Forge 1.8.1 reports the pranked multisig as the caller, so that filter keeps no
+calls there. This reader accepts the multisig as caller and rejects a call whose
+caller is the script, which pre-fix Foundry could not tell apart. The verdict
+records the forge version; pin `expected_forge_version` so the shape of the
+traces cannot change under a pin.
+
+The shell reader selects children by `parent`. The Solidity cross-check selects
+them from the entry call's `children`, reads the event with its own ABI decoding
+and parses values separately. Input is limited to 8 MiB, and the Solidity side
+re-parses it for every field it reads, so a trace with many calls makes
+`forge test` slow.
+
+Reproduction against the executed eigenx transaction (Safe `0x684c…9e09`, nonce 0,
+block 23443615): run the script at `f0d751f` with forge 1.8.1 on a fork of block
+23443614, with `ZEUS_ENV_PermissionController`, `ZEUS_ENV_computeOpsMultisig`,
+`ZEUS_ENV_computeWhitelisterMultisig`, `ZEUS_ENV_MAX_GLOBAL_ACTIVE_APPS` and
+`ZEUS_DEPLOYED_AppController_Proxy` set. Its four calls fold to `safeTxHash`
+`0x9e338be3…`, the executed transaction. The environment values were read back from
+that transaction, so this shows the traces and batching agree with the chain, not
+that those values are right. The public repository starts on 2025-09-29, after the
+transaction was executed, so `f0d751f` may differ from the commit it was built
+from. [`test/fixtures/zeus-traces.json`](../test/fixtures/zeus-traces.json) is a
+trimmed copy of that run's output. Protocol-kit's nonce and MultiSend choices were
+checked against this one transaction only.
