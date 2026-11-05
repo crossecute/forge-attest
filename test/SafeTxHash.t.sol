@@ -625,6 +625,42 @@ contract SafeTxHashTest {
         require(!c, "no chainId");
     }
 
+    // ------------------------------------------- the preimage-suffix approval
+
+    address internal constant RC_CHILD = 0xb291232F480F41c75802C4a60F1D2AC03404Afef;
+
+    /// The approval Safe 0xb291…Afef executed at nonce 205 on Ethereum: `approveHash`
+    /// followed by the Risk Council transaction at nonce 447.
+    function test_PreimageApprovalEqualsTheExecutedChildTx() external view {
+        SafeTxLib.SafeTx memory parent = SafeTxLib.readCanonical(_read("nested-preimage-parent.json"));
+        bytes32 parentHash = parent.hash();
+        _assertEq(parentHash, 0x0ea9a8fed74bc267e88a5de190ca88a3c63b5963784f50176bfd0f4fb523f8e4, "parent hash");
+
+        SafeTxLib.SafeTx memory approval = SafeTxLib.approvalTxWithPreimage(parent, parentHash, RC_CHILD, 205, "1.3.0");
+        require(
+            keccak256(approval.data) == keccak256(vm.parseBytes(_read("nested-preimage-child-205.hex"))),
+            "calldata differs from the executed approval"
+        );
+        _assertEq(approval.hash(), 0xcce0f737311aecf1b4a54acae4d57231d60c435e764e3cbc924a9a4a15f707cb, "child hash");
+        require(bytes4(approval.data) == SafeTxLib.APPROVE_HASH_SELECTOR, "still approveHash");
+    }
+
+    /// The suffix is built from the parent, so any change to it changes the approval,
+    /// and the plain form is unaffected.
+    function test_PreimageApprovalFollowsTheParent() external view {
+        SafeTxLib.SafeTx memory parent = SafeTxLib.readCanonical(_read("nested-preimage-parent.json"));
+        bytes32 h = parent.hash();
+        bytes32 base = SafeTxLib.approvalTxWithPreimage(parent, h, RC_CHILD, 205, "1.3.0").hash();
+
+        parent.nonce += 1;
+        require(SafeTxLib.approvalTxWithPreimage(parent, h, RC_CHILD, 205, "1.3.0").hash() != base, "parent nonce");
+        parent.nonce -= 1;
+        parent.data = bytes.concat(parent.data, hex"00");
+        require(SafeTxLib.approvalTxWithPreimage(parent, h, RC_CHILD, 205, "1.3.0").hash() != base, "parent data");
+
+        require(SafeTxLib.approvalTx(parent.safe, h, RC_CHILD, 205, 1, "1.3.0").data.length == 36, "plain stays 36 bytes");
+    }
+
     /// The check is phrased over a set, so a child that bundles its approval with
     /// other calls reads the same way as a lone approval.
     function test_FindsTheApprovalAmongOtherCalls() external pure {

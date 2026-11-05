@@ -450,12 +450,12 @@ attest_claim() { # <claim index>
   local i="$1" out_json canonical norm_args sol_child derived
   local output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   local safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce
-  local child_safe child_nonce expected_child_hash
+  local child_safe child_nonce child_approval expected_child_hash
   local expected_sha expected_canonical_sha expected_hash got_sha canonical_sha cast_hash
   local sol_hash="" child_hash="" run
   for k in output_path input_format input_profile batch_mode multisend_address safe_version chain_id \
            safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce \
-           child_safe child_nonce; do
+           child_safe child_nonce child_approval; do
     printf -v "$k" '%s' "$(cfg "$i" "$k")"
   done
   expected_sha=$(cfg "$i" expected_output_sha256)
@@ -571,6 +571,7 @@ attest_claim() { # <claim index>
      ATTEST_REFUND_RECEIVER="$refund_receiver" \
      ATTEST_CHILD_SAFE="$child_safe" \
      ATTEST_CHILD_NONCE="$child_nonce" \
+     ATTEST_CHILD_APPROVAL="$child_approval" \
        "$forge_bin" test --root "$SCRIPT_DIR" --match-contract AttestTest -q >"$WORK/forge-test.log" 2>&1; then
     sol_hash=$(lc "$(cat "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" 2>/dev/null || echo '')")
     printf '    safeTx   : %s\n' "${sol_hash:-<unavailable>}"
@@ -604,13 +605,15 @@ attest_claim() { # <claim index>
       --parent-safe "$safe_address" --parent-hash "$cast_hash" \
       --child-safe "$child_safe" --child-nonce "$child_nonce" \
       --chain-id "${R_CHAIN[i]}" \
-      --safe-version "$(jq -r .safeVersion "$canonical")" >"$WORK/child.$i.json" \
+      --safe-version "$(jq -r .safeVersion "$canonical")" \
+      --approval "${child_approval:-plain}" ${child_approval:+--parent-canonical "$canonical"} >"$WORK/child.$i.json" \
       || die "could not construct the nested approval"
 
     eval "$(bash "$SCRIPT_DIR/lib/derive.sh" "$WORK/child.$i.json")"
     child_hash=$(lc "$SAFE_TX_HASH")
 
     printf '    child    : %s nonce %s\n' "$child_safe" "$child_nonce"
+    [[ -z "$child_approval" || "$child_approval" == plain ]] || printf '    approval : %s\n' "$child_approval"
     printf '    approves : %s\n' "$cast_hash"
     printf '    signs    : %s\n' "$child_hash"
 
@@ -958,6 +961,7 @@ claim_json() { # <claim index>
     --arg child_safe       "$(cfg "$i" child_safe)" \
     --arg child_nonce      "$(cfg "$i" child_nonce)" \
     --arg child_safe_tx    "${R_CHILD[i]}" \
+    --arg child_approval   "$(cfg "$i" child_approval)" \
     --arg proposal_action  "${R_ACTION[i]}" \
     --arg proposal_sender  "${R_SENDER[i]}" \
     --arg url              "${R_URL[i]}" \
@@ -977,7 +981,8 @@ claim_json() { # <claim index>
         safe_tx_live:     $safe_tx_live
       },
       nested: (if $child_safe == "" then null else
-        { safe: $child_safe, nonce: $child_nonce, safe_tx: $child_safe_tx }
+        { safe: $child_safe, nonce: $child_nonce, approval: (if $child_approval == "" then "plain" else $child_approval end),
+          safe_tx: $child_safe_tx }
       end),
       proposal: (if $proposal_action == "" then null else
         { action: $proposal_action, sender: $proposal_sender, url: $proposal_url }

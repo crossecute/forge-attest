@@ -33,7 +33,7 @@ RUN_KEYS=(script rpc_env fork_block sig capture senders unclaimed)
 DEFAULT_KEYS=(input_format input_profile batch_mode safe_version multisend_address)
 CLAIM_KEYS=(output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   safe_tx_gas base_gas gas_price gas_token refund_receiver
-  child_safe child_nonce child_network expected_child_safe_tx_hash
+  child_safe child_nonce child_approval child_network expected_child_safe_tx_hash
   safe_network safe_address safe_nonce live safe_ui_prefix safe_tx_service_url
   expected_output_sha256 expected_canonical_sha256 expected_safe_tx_hash)
 
@@ -248,6 +248,12 @@ bad=$(jq -r '. as $m | [$m.claims | to_entries[] | select(.value.input_format ==
     | select(($run.rpc_env == "" or $run.fork_block == "") or ([$m.claims[] | select(.run == $r)] | length) != 1)
     | .value.output_path] | first // empty' <<<"$(jq -n --argjson runs "$runs_json" --argjson claims "$claims_json" '{runs: $runs, claims: $claims}')")
 [[ -z "$bad" ]] || die "config: a zeus-traces claim needs a run with rpc_env and fork_block, and is its run's only claim: $bad"
+
+# The approval a child Safe sends is plain `approveHash`, or that followed by the
+# parent transaction. The profile only means something with a child to send it.
+bad=$(jq -r '[.[] | select((.child_approval != "" and .child_approval != "plain" and .child_approval != "preimage-suffix")
+    or (.child_approval != "" and .child_safe == "")) | .output_path] | first // empty' <<<"$claims_json")
+[[ -z "$bad" ]] || die "config: child_approval must be plain or preimage-suffix, and needs child_safe: $bad"
 
 # Two claims on one file, or a claimed file also listed as unclaimed, would each
 # be attested or excused by the other.

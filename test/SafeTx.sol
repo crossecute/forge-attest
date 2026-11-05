@@ -18,6 +18,7 @@ interface Vm {
     function parseJsonBytes32(string calldata json, string calldata key) external view returns (bytes32);
     function parseJsonUintArray(string calldata json, string calldata key) external view returns (uint256[] memory);
     function parseJsonString(string calldata json, string calldata key) external view returns (string memory);
+    function parseBytes(string calldata value) external pure returns (bytes memory);
     function parseBytes32(string calldata value) external pure returns (bytes32);
     function parseUint(string calldata value) external pure returns (uint256);
     function parseAddress(string calldata value) external pure returns (address);
@@ -99,6 +100,27 @@ library SafeTxLib {
     ///      a signer what they approved, which is why the parent's decoded intent
     ///      has to travel alongside.
     bytes4 internal constant APPROVE_HASH_SELECTOR = 0xd4d9bdcd;
+
+    /// @dev Selector that precedes the parent transaction some child Safes append to
+    ///      `approveHash`. Observed on Ethereum in executed approvals; the function it
+    ///      names is not known, so only the bytes are modelled.
+    bytes4 internal constant PREIMAGE_SUFFIX_SELECTOR = 0xfb4e87b0;
+
+    /// @notice The parent transaction as the suffix carries it.
+    struct Preimage {
+        uint256 chainId;
+        address safe;
+        uint256 nonce;
+        address to;
+        uint256 value;
+        bytes data;
+        uint8 operation;
+        uint256 safeTxGas;
+        uint256 baseGas;
+        uint256 gasPrice;
+        address gasToken;
+        address refundReceiver;
+    }
 
     /// @notice What a batch or call cannot tell us and the config must supply.
     /// @dev The gas/refund fields are here because neither format ever carries
@@ -222,6 +244,37 @@ library SafeTxLib {
     ///         parent Safe it owns. Every field is determined by the arguments.
     ///         There is nothing for a producer script to choose, so this is
     ///         constructed rather than read from an artifact.
+    /// @notice The approval whose calldata is `approveHash(h)` followed by
+    ///         `PREIMAGE_SUFFIX_SELECTOR` and `abi.encode(Preimage[1])` for the parent.
+    /// @dev The suffix is built from `parent`, so it cannot describe a transaction other
+    ///      than the one `parentHash` commits to. lib/nested.sh builds the same bytes by
+    ///      hand; the two must agree.
+    function approvalTxWithPreimage(
+        SafeTx memory parent,
+        bytes32 parentHash,
+        address childSafe,
+        uint256 childNonce,
+        string memory safeVersion
+    ) internal pure returns (SafeTx memory t) {
+        t = approvalTx(parent.safe, parentHash, childSafe, childNonce, parent.chainId, safeVersion);
+        Preimage[] memory suffix = new Preimage[](1);
+        suffix[0] = Preimage({
+            chainId: parent.chainId,
+            safe: parent.safe,
+            nonce: parent.nonce,
+            to: parent.to,
+            value: parent.value,
+            data: parent.data,
+            operation: parent.operation,
+            safeTxGas: parent.safeTxGas,
+            baseGas: parent.baseGas,
+            gasPrice: parent.gasPrice,
+            gasToken: parent.gasToken,
+            refundReceiver: parent.refundReceiver
+        });
+        t.data = bytes.concat(t.data, PREIMAGE_SUFFIX_SELECTOR, abi.encode(suffix));
+    }
+
     function approvalTx(
         address parentSafe,
         bytes32 parentHash,
