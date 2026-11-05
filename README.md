@@ -242,8 +242,12 @@ review decides, and the pin stays a SHA.
 
 ## Supported producer formats
 
-`forge-attest` takes whatever Safe JSON your ops repo already emits. It detects the
-format automatically, or you name it with `input_format`.
+`forge-attest` reads the Safe JSON shapes below. It detects the format
+automatically, or you name it with `input_format`.
+
+See the [producer format proposal](docs/producer-format-proposal.md) for additional
+readers identified in the Foundry multisig research and version-specific
+Transaction Builder compatibility requirements. Proposed readers are not enabled.
 
 ### `safe-tx`: a complete transaction
 
@@ -281,8 +285,8 @@ carries any of them. An array of such calls is the `tx-array` format.
 
 ### `tx-builder`: a Safe{Wallet} Transaction Builder batch
 
-The shape produced by the Safe UI's "export batch" and by FraxFinance's
-[`SafeTxHelper.writeTxs`](https://github.com/FraxFinance/frax-standard-solidity/blob/master/src/SafeTxHelper.sol):
+An encoded-call batch shape used by FraxFinance's
+[`SafeTxHelper.writeTxs`](https://github.com/FraxFinance/frax-standard-solidity/blob/dba7c2981202e9e1664ab109478dfe553f90e1e6/src/SafeTxHelper.sol):
 
 ```json
 {
@@ -295,6 +299,11 @@ The shape produced by the Safe UI's "export batch" and by FraxFinance's
   ]
 }
 ```
+
+File `version` and `meta.txBuilderVersion` are different identifiers. Shape
+detection does not certify compatibility with every Transaction Builder app
+release. The inspected Safe app schemas also omit `operation`; that field is a
+producer extension here. Decoded-method entries remain refused as described below.
 
 ### `tx-array`: a bare array
 
@@ -362,8 +371,9 @@ You can run the normaliser on its own to see what a given file folds into:
 ### Refused on purpose
 
 - **`contractMethod` with a null `data`.** UI exports can describe a call as an ABI
-  method plus input values. Encoding that requires the target ABI; rather than invent
-  calldata, `forge-attest` fails and asks for an export with encoded `data`.
+  method descriptor plus input values. The descriptor can provide the ABI fragment,
+  but descriptor encoding is not implemented here. `forge-attest` fails and asks
+  for an export with encoded `data`.
 - **Inner `operation: 1` under `MultiSendCallOnly`.** That contract reverts on
   delegatecalls, so the batch could never execute. Pass the plain MultiSend via
   `multisend_address` if you really mean it.

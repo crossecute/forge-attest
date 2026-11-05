@@ -15,7 +15,7 @@ from Solidity and `test/shell/run.sh` from bash; both assert the same hashes.
 | `tx-builder-etherfi-binding.json` | `tx-builder` | Synthetic batch using the existing self-binding fixture's calls with ether.fi's `chainId`, `safeAddress`, `meta.txBuilderVersion` and `transactions` envelope. Tests absent, agreeing and conflicting config bindings. |
 | `tx-builder-zksync-era.json` | `tx-builder` | The Frax batch re-pointed at chain 324, where the canonical MultiSendCallOnly is not what Safe{Wallet} uses. Must be **refused** unless `multisend_address` is named. |
 | `tx-array.json` | `tx-array` | A bare array with no envelope, so `chainId` has to come from config. |
-| `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected**, because encoding it needs the target ABI. |
+| `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected**, because descriptor encoding is not implemented. |
 | `tx-builder-delegatecall.json` | `tx-builder` | A batch with an inner `operation: 1`. Must be **rejected** under MultiSendCallOnly and accepted with an explicit `--multisend`. |
 
 ## Provenance of `tx-builder-frax-optimism.json`
@@ -24,6 +24,7 @@ Copied verbatim from FraxFinance's `frax-oft-upgradeable`:
 
 - **File:** `scripts/ops/V110/destinations/txs/UpgradeV110Destination-10.json`
 - **Repo:** https://github.com/FraxFinance/frax-oft-upgradeable
+- **Verified source snapshot (2026-11-05):** [artifact at `6964529b`](https://github.com/FraxFinance/frax-oft-upgradeable/blob/6964529b29b367d976d62a6df1efbbacb31d3205/scripts/ops/V110/destinations/txs/UpgradeV110Destination-10.json). Its blob hash `447b40acc76f22948b44407016b9e04a8adf77d9` matches this fixture byte-for-byte; this does not identify the historical helper dependency revision.
 - **Produced by:** [`SafeTxHelper.writeTxs`](https://github.com/FraxFinance/frax-standard-solidity/blob/master/src/SafeTxHelper.sol)
   in `frax-standard-solidity`
 - **Fetched:** 2026-07-28

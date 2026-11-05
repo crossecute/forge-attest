@@ -262,9 +262,8 @@ else
   tx_count=$(printf '%s' "$batch_json" | jq 'length')
   (( tx_count > 0 )) || die "batch contains no transactions"
 
-  # A UI-exported batch may describe a call as an ABI method + inputs with a null
-  # `data`. Encoding that needs the target ABI, which is out of scope, so refuse
-  # rather than silently attest an empty calldata.
+  # Descriptor encoding is not implemented. A method with absent calldata must
+  # fail rather than become an empty call.
   for (( i = 0; i < tx_count; i++ )); do
     m=$(printf '%s' "$batch_json" | jq -r ".[$i].method // empty")
     d=$(printf '%s' "$batch_json" | jq -r ".[$i].data")
