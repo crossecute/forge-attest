@@ -16,6 +16,7 @@ from Solidity and `test/shell/run.sh` from bash; both assert the same hashes.
 | `tx-builder-zksync-era.json` | `tx-builder` | The Frax batch re-pointed at chain 324, where the canonical MultiSendCallOnly is not what Safe{Wallet} uses. Must be **refused** unless `multisend_address` is named. |
 | `tx-array.json` | `tx-array` | A bare array with no envelope, so `chainId` has to come from config. |
 | `tx-builder-contract-method.json` | `tx-builder` | A UI export describing a call as `contractMethod` + inputs with null `data`. Must be **rejected** by the ordinary reader; descriptor encoding requires the explicit static-v1 profile. |
+| `tx-builder-entry-bindings.json` | `tx-builder` | A one-call batch shaped like Hyperlane's builder output: every entry carries the SafeTx gas, token, refund and `nonce` fields at their placeholder values. Must hash like `tx-builder-single.json`; any other value in those fields is **rejected**. |
 | `tx-builder-delegatecall.json` | `tx-builder` | A batch with an inner `operation: 1`. Must be **rejected** under MultiSendCallOnly and accepted with an explicit `--multisend`. |
 
 ## Provenance of `tx-builder-frax-optimism.json`

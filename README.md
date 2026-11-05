@@ -598,6 +598,15 @@ You can run the normaliser on its own to see what a given file folds into:
   `multisend_address` if you really mean it.
 - **A config value that contradicts the JSON.** If both carry a `chainId` and they
   disagree, that is a tampering signal. It errors rather than silently picking one.
+- **A batch entry whose Safe fields disagree with the claim.** Some producers write
+  each entry as a full `SafeTransactionData` (Hyperlane's builder does), with
+  `safeTxGas`, `baseGas`, `gasPrice`, `gasToken`, `refundReceiver` and `nonce`. The
+  reader takes only `to`, `value`, `data` and `operation` from an entry, so a
+  different value would otherwise vanish from the hash. Each field present must
+  equal the value the transaction is bound to (zero unless the claim sets it), and a
+  `null` is refused. A `nonce` of `0` is also accepted as the placeholder those
+  producers write, since the nonce comes from the claim. This applies to
+  `tx-builder`, `tx-array` and the `static-v1` profile.
 
 ## Nested Safes
 
