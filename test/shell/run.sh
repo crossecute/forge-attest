@@ -34,19 +34,7 @@ trap 'kill $ANVILS 2>/dev/null; rm -rf "$TMP"' EXIT
 if [[ -t 1 ]]; then GREEN=$'\033[32m'; RED=$'\033[31m'; BOLD=$'\033[1m'; RESET=$'\033[0m'
 else GREEN=; RED=; BOLD=; RESET=; fi
 
-pass() { PASS=$((PASS + 1)); printf '  %s✓%s %s\n' "$GREEN" "$RESET" "$1"; }
-fail() { FAILED=$((FAILED + 1)); printf '  %s✗%s %s\n' "$RED" "$RESET" "$1"; }
-group() { printf '\n%s==>%s %s\n' "$BOLD" "$RESET" "$1"; }
-
-assert_eq() { # what got want
-  if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1"$'\n      got  '"$2"$'\n      want '"$3"; fi
-}
-assert_ne() { # what a b
-  if [[ "$2" != "$3" ]]; then pass "$1"; else fail "$1 (both were $2)"; fi
-}
-assert_contains() { # what haystack needle
-  if [[ "$2" == *"$3"* ]]; then pass "$1"; else fail "$1"$'\n      output: '"$2"; fi
-}
+source "$ROOT/test/shell/assertions.sh"
 
 # normalize <fixture> [extra args...] -> canonical JSON on stdout
 normalize() {
@@ -1658,6 +1646,8 @@ check_vendored() { # file
 
 check_vendored safe_hashes.sh
 check_vendored multisend-exceptions.json
+
+if bash "$ROOT/test/shell/readers.sh"; then pass "producer reader suites"; else fail "producer reader suites"; fi
 
 # ------------------------------------------------------------------- verdict
 

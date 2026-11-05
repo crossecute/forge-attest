@@ -57,7 +57,10 @@ contract AttestTest {
         b.gasToken = _envAddress("ATTEST_GAS_TOKEN");
         b.refundReceiver = _envAddress("ATTEST_REFUND_RECEIVER");
 
-        SafeTxLib.SafeTx memory t = SafeTxLib.readAny(json, b);
+        SafeTxLib.SafeTx memory t = SafeTxLib.readWithFormat(
+            json, b, vm.envOr("ATTEST_INPUT_FORMAT", string("")), vm.envOr("ATTEST_INPUT_PROFILE", string(""))
+        );
+        _assertClaimBindings(t);
         bytes32 computed = t.hash();
         if (b.safe == address(0)) b.safe = t.safe;
 
@@ -81,6 +84,27 @@ contract AttestTest {
                 "solidity-derived Safe tx hash ", vm.toString(computed), " != expected ", vm.toString(expected)
             )
         );
+    }
+
+    function _assertClaimBindings(SafeTxLib.SafeTx memory t) private view {
+        _assertUint("ATTEST_NONCE", t.nonce);
+        _assertUint("ATTEST_CHAIN_ID", t.chainId);
+        _assertUint("ATTEST_SAFE_TX_GAS", t.safeTxGas);
+        _assertUint("ATTEST_BASE_GAS", t.baseGas);
+        _assertUint("ATTEST_GAS_PRICE", t.gasPrice);
+        _assertAddress("ATTEST_SAFE", t.safe);
+        _assertAddress("ATTEST_GAS_TOKEN", t.gasToken);
+        _assertAddress("ATTEST_REFUND_RECEIVER", t.refundReceiver);
+    }
+
+    function _assertUint(string memory name, uint256 actual) private view {
+        string memory given = vm.envOr(name, string(""));
+        require(bytes(given).length == 0 || vm.parseUint(given) == actual, string.concat(name, " mismatch"));
+    }
+
+    function _assertAddress(string memory name, address actual) private view {
+        string memory given = vm.envOr(name, string(""));
+        require(bytes(given).length == 0 || vm.parseAddress(given) == actual, string.concat(name, " mismatch"));
     }
 
     function _envUint(string memory name) private view returns (uint256) {

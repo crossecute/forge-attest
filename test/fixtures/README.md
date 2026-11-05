@@ -32,3 +32,19 @@ the reference for what a real `SafeTxHelper` artifact looks like: a `createdAt`
 wall-clock stamp, `meta`, `value`/`operation` as quoted strings, and no Safe
 address, nonce or gas fields anywhere. Those are exactly the facts an attestation
 config has to supply.
+
+## Typed-data fixtures
+
+`safe-eip712.json` maps `safe-tx-single.json` into the complete typed-data
+schema constructed by [Base](https://github.com/base/contracts/blob/eaa7729b0a23cfe7570386e3a1c4ebefa8212c41/scripts/universal/MultisigScript.sol#L807-L839).
+`safe-eip712-safe-utils.json` removes only `types.EIP712Domain`, following the
+[pinned safe-utils writer](https://github.com/Recon-Fuzz/safe-utils/blob/637e04202bb9bb879803f6b42137e2d5d035fbe0/src/Safe.sol).
+Both are synthetic representations of the existing pinned transaction, not
+production exports. Their identical canonical hash is pinned independently in
+`Eip712Reader.t.sol`; the shell suite also checks byte equality with the original.
+
+`safe-eip712-numeric.json` is the same typed transaction with numeric JSON
+chain/uint fields, matching the integer-literal representation emitted by Foundry
+serializers. Its canonical bytes and hash must equal the quoted fixture in both
+readers. The uint256-max test retains quoted strings; the shell continues to
+reject numeric literals above its exact-integer range.

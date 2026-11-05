@@ -66,3 +66,10 @@ model" sections before writing a claim.
    queued, then requires the live check. For a nested claim it signs the child's
    approval instead and needs `child_network` set. The hashes it prints before
    signing should match the device and step 5.
+
+For a complete Safe EIP-712 envelope, use `input_format = "safe-eip712"`.
+Set `input_profile = "safe-utils"` only for the pinned variant that omits the
+explicit domain type; otherwise use the default `safe` profile. Keep all signed
+fields in the producer output and reconcile claim bindings. See
+`docs/producer-readers.md`. Do not treat console markers or two signing hashes as
+the full envelope.

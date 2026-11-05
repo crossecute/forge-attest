@@ -398,12 +398,12 @@ R_CHAIN=() R_SAFE=() R_NONCE=() R_URL=() R_CHILD_URL=() R_LIVE=() R_ACTION=() R_
 
 attest_claim() { # <claim index>
   local i="$1" out_json canonical norm_args sol_child
-  local output_path input_format batch_mode multisend_address safe_version chain_id
+  local output_path input_format input_profile batch_mode multisend_address safe_version chain_id
   local safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce
   local child_safe child_nonce expected_child_hash
   local expected_sha expected_canonical_sha expected_hash got_sha canonical_sha cast_hash
   local sol_hash="" child_hash="" run
-  for k in output_path input_format batch_mode multisend_address safe_version chain_id \
+  for k in output_path input_format input_profile batch_mode multisend_address safe_version chain_id \
            safe_tx_gas base_gas gas_price gas_token refund_receiver safe_address safe_nonce \
            child_safe child_nonce; do
     printf -v "$k" '%s' "$(cfg "$i" "$k")"
@@ -436,6 +436,7 @@ attest_claim() { # <claim index>
   norm_args=(--input "$out_json" --summary --print-digest)
   add_arg() { [[ -n "$2" ]] && norm_args+=("$1" "$2"); return 0; }
   add_arg --format          "$input_format"
+  add_arg --profile         "$input_profile"
   add_arg --batch-mode      "$batch_mode"
   add_arg --multisend       "$multisend_address"
   add_arg --safe-version    "$safe_version"
@@ -499,6 +500,8 @@ attest_claim() { # <claim index>
   cp "$canonical" "$SCRIPT_DIR/out/canonical-safe-tx.json"
   rm -f "$SCRIPT_DIR/out/solidity-safe-tx-hash.txt" "$SCRIPT_DIR/out/solidity-child-safe-tx-hash.txt"
   if ATTEST_JSON="out/producer-tx.json" \
+     ATTEST_INPUT_FORMAT="$input_format" \
+     ATTEST_INPUT_PROFILE="$input_profile" \
      ATTEST_EXPECTED_SAFE_TX_HASH="${expected_hash:-$cast_hash}" \
      ATTEST_SAFE="$safe_address" \
      ATTEST_NONCE="$safe_nonce" \
