@@ -425,10 +425,21 @@ library SafeTxLib {
         bool carriesData = bytes(raw).length != 0 && !_is(raw, "null");
         if (carriesData) t.data = vm.parseJsonBytes(json, dataPath);
         string memory methodPath = string.concat(at, ".contractMethod");
-        if (!vm.keyExistsJson(json, methodPath) || _is(vm.parseJsonString(json, methodPath), "null")) return t;
+        if (!vm.keyExistsJson(json, string.concat(methodPath, ".name"))) {
+            require(nullOrMissing(json, methodPath), "SafeTxLib: invalid method descriptor");
+            string memory values = string.concat(at, ".contractInputsValues");
+            if (!nullOrMissing(json, values)) requireKeys(json, values, '[]');
+            return t;
+        }
         bytes memory encoded = encodeDecodedMethod(json, at, t.value);
         require(!carriesData || keccak256(t.data) == keccak256(encoded), "SafeTxLib: descriptor/data mismatch");
         t.data = encoded;
+    }
+
+    function nullOrMissing(string memory json, string memory path) private view returns (bool) {
+        if (!vm.keyExistsJson(json, path)) return true;
+        try vm.parseJsonString(json, path) returns (string memory raw) { return _is(raw, "null"); }
+        catch { return false; }
     }
 
     function encodeDecodedMethod(string memory json, string memory at, uint256 value) private view returns (bytes memory) {
@@ -451,7 +462,8 @@ library SafeTxLib {
             encoding.keys = string.concat(encoding.keys, '"', key, '"');
             n++;
         }
-        if (n != 0 || vm.keyExistsJson(json, string.concat(at, ".contractInputsValues")))
+        if (n == 0) vm.parseJsonStringArray(json, string.concat(method, ".inputs"));
+        if (n != 0 || !nullOrMissing(json, string.concat(at, ".contractInputsValues")))
             requireKeys(json, string.concat(at, ".contractInputsValues"), string.concat(encoding.keys, "]"));
         return abi.encodePacked(bytes4(keccak256(bytes(string.concat(encoding.signature, ")")))), encoding.arguments);
     }
@@ -508,7 +520,10 @@ library SafeTxLib {
     function readWithFormat(string memory json, Binding memory b, string memory format, string memory profile)
         internal view returns (SafeTx memory)
     {
-        if (_is(format, "tx-builder-decoded")) return readDecoded(json, b, profile);
+        if (_is(format, "tx-builder-decoded") || (_is(profile, "static-v1") &&
+            (_is(format, "tx-builder") || ((bytes(format).length == 0 || _is(format, "auto")) && vm.keyExistsJson(json, ".transactions"))))) {
+            return readDecoded(json, b, profile);
+        }
         bool typed = vm.keyExistsJson(json, ".primaryType") || vm.keyExistsJson(json, ".types") ||
             vm.keyExistsJson(json, ".domain") || vm.keyExistsJson(json, ".message");
         if (_is(format, "safe-eip712") || ((bytes(format).length == 0 || _is(format, "auto")) && typed)) {

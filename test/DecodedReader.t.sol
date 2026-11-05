@@ -34,6 +34,18 @@ contract DecodedReaderTest is ReaderTestBase {
         _reject(json, "tx-builder-decoded", "static-v1");
     }
 
+    function test_NativeTransfersAndNullNoArgInputs() external view {
+        SafeTxLib.Binding memory b;
+        b.safe = SAFE; b.nonce = 42;
+        string memory native_ = '{"version":"1.0","chainId":"1","transactions":[{"to":"0x000000000000000000000000000000000000bEEF",'
+            '"value":"1","data":null,"contractMethod":null,"contractInputsValues":null}]}';
+        SafeTxLib.SafeTx memory t = SafeTxLib.readWithFormat(native_, b, "tx-builder-decoded", "static-v1");
+        require(t.value == 1 && t.data.length == 0 && t.operation == 0, "native transfer changed");
+        string memory zeroArgs = _replace(_read("tx-builder-static-vectors.json"), '"contractInputsValues": {}', '"contractInputsValues": null');
+        require(SafeTxLib.hash(SafeTxLib.readWithFormat(zeroArgs, b, "tx-builder-decoded", "static-v1")) ==
+            0xac7e4f66f96082eb8fcb6e8a83b3be32248aeee6c1b1bd13366e715d1aacff17, "zero-argument method changed");
+    }
+
     function test_RequiresProfileAndBoundsSourceSize() external {
         _reject(string(new bytes(1048577)), "tx-builder-decoded", "static-v1");
     }

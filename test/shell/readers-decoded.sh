@@ -2,6 +2,8 @@
 
 group "Decoded Transaction Builder reader"
 reader_cross tx-builder-decoded.json tx-builder-decoded static-v1 --nonce 42
+reader_cross tx-builder-decoded.json tx-builder static-v1 --nonce 42
+reader_cross tx-builder-decoded.json auto static-v1 --nonce 42
 reader_cross tx-builder-static-vectors.json tx-builder-decoded static-v1 --nonce 42
 reader_cross tx-builder-decoded.json tx-builder-decoded static-v1 --nonce 42 --batch-mode multisend
 reader_cross tx-builder-decoded.json tx-builder-decoded static-v1 --nonce 42 --gas-price 1000 --safe-tx-gas 50000

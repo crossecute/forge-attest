@@ -22,11 +22,9 @@ reader_signed_fields() {
   local key n
   jq_root -e '
     ([.safe,.to,.gasToken,.refundReceiver] | all(type == "string" and test("^0x[0-9a-fA-F]{40}$"))) and
-    (.data | type == "string" and test("^0x([0-9a-fA-F]{2})*$")) and
-    ([.chainId,.value,.operation,.safeTxGas,.baseGas,.gasPrice,.nonce] | all(
-      if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
-      elif type == "string" then test("^(0|[1-9][0-9]*)$") else false end))
+    (.data | type == "string" and test("^0x([0-9a-fA-F]{2})*$"))
   ' >/dev/null || die "invalid signed transaction fields (large integers must be decimal strings)"
+  jq_root -c ' .chainId,.value,.operation,.safeTxGas,.baseGas,.gasPrice,.nonce' | reader_uints
   for key in chainId value operation safeTxGas baseGas gasPrice nonce; do
     n=$(jget ".$key")
     cast to-uint256 "$n" >/dev/null 2>&1 || die "$key exceeds uint256"
@@ -49,12 +47,10 @@ reader_service() {
     ((keys - ["safe","chainId","to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce","sender","signature","origin","contractTransactionHash","safeTxHash"]) | length == 0)
   ' >/dev/null || die "not an exported Safe service request"
   jq_root -e '
-    def scalar_uint: if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
-      elif type == "string" then test("^(0|[1-9][0-9]*)$") else false end;
-    (if has("chainId") then (.chainId | scalar_uint) else true end) and
     (if has("contractTransactionHash") then (.contractTransactionHash | type == "string" and test("^0x[0-9a-fA-F]{64}$")) else true end) and
     (if has("safeTxHash") then (.safeTxHash | type == "string" and test("^0x[0-9a-fA-F]{64}$")) else true end)
   ' >/dev/null || die "invalid service chain or transaction hash"
+  jq_root -c 'if has("chainId") then .chainId else empty end' | reader_uints
   SERVICE_HASH=$(jget .contractTransactionHash)
   SERVICE_ALT_HASH=$(jget .safeTxHash)
   if [[ "$PROFILE" == safe-utils ]]; then
@@ -92,11 +88,16 @@ reader_decoded() {
     ((keys - ["version","chainId","createdAt","meta","transactions"]) | length == 0) and
     (.transactions | type == "array" and length > 0 and length <= 128)
   ' >/dev/null || die "invalid static-v1 batch envelope"
+  jq_root -c 'if has("chainId") then .chainId else empty end' | reader_uints
+  if [[ "$(jq_root '(.meta // {}) | has("createdFromSafeAddress")')" == true ]]; then
+    norm_addr "$(jget .meta.createdFromSafeAddress)" >/dev/null
+  fi
   local count i tx method n j name typ arg value data signature encoded key used payable
   local output='[]'
   count=$(jq_root '.transactions | length')
   for (( i=0; i<count; i++ )); do
     tx=$(jq_root -c --argjson i "$i" '.transactions[$i]')
+    jq -c 'if has("value") then .value else 0 end' <<<"$tx" | reader_uints
     [[ "$(jq -r '.operation // 0 | tostring' <<<"$tx")" == 0 ]] || die "static-v1 supports CALL only"
     method=$(jq -c '.contractMethod // null' <<<"$tx")
     if [[ "$method" != null ]]; then
@@ -108,6 +109,8 @@ reader_decoded() {
       ' <<<"$tx" >/dev/null || die "invalid static-v1 method descriptor"
       name=$(jq -r '.contractMethod.name' <<<"$tx")
       [[ "$name" != receive && "$name" != fallback ]] || die "not an ABI function"
+      value=$(jq -r '.value // 0 | tostring' <<<"$tx")
+      [[ "$value" == 0 || "$(jq -r '.contractMethod.payable' <<<"$tx")" == true ]] || die "value sent to nonpayable method"
       signature="$name("; n=$(jq '.contractMethod.inputs | length' <<<"$tx")
       local args=()
       used='[]'
@@ -140,9 +143,18 @@ reader_decoded() {
       data=$(jq -r '.data // ""' <<<"$tx")
       [[ -z "$data" || "${data,,}" == "${encoded,,}" ]] || die "encoded calldata contradicts method descriptor"
       tx=$(jq -c --arg data "$encoded" '.data = $data' <<<"$tx")
+    else
+      jq -e '.contractInputsValues == null or (.contractInputsValues | type == "object" and length == 0)' <<<"$tx" >/dev/null \
+        || die "method inputs without a method descriptor"
     fi
     tx=$(jq -c 'del(.contractMethod,.contractInputsValues)' <<<"$tx")
     output=$(jq -c --argjson tx "$tx" '. + [$tx]' <<<"$output")
   done
   J=$(jq_root -c --argjson txs "$output" '.transactions = $txs')
+}
+
+reader_uints() {
+  jq -es 'all(.[]; if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
+    elif type == "string" then test("^(0|[1-9][0-9]*)$") else false end)' >/dev/null \
+    || die "invalid decimal integer (large integers must be strings)"
 }

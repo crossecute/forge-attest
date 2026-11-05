@@ -206,7 +206,7 @@ if [[ "$FORMAT" == "safe-eip712" ]]; then
 elif [[ "$FORMAT" == "safe-service" ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_service
-elif [[ "$FORMAT" == "tx-builder-decoded" ]]; then
+elif [[ "$FORMAT" == "tx-builder-decoded" || ( "$FORMAT" == "tx-builder" && "$PROFILE" == static-v1 ) ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_decoded
 elif [[ -n "$PROFILE" ]]; then
