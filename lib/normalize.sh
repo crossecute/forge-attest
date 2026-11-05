@@ -197,7 +197,7 @@ if [[ "$FORMAT" == "auto" ]]; then
   fi
 fi
 
-case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
+case "$FORMAT" in safe-tx|safe-eip712|safe-service|call|tx-builder|tx-builder-decoded|tx-array) ;; *) die "unknown --format: $FORMAT" ;; esac
 case "$BATCH_MODE" in auto|multisend|single) ;; *) die "unknown --batch-mode: $BATCH_MODE" ;; esac
 
 if [[ "$FORMAT" == "safe-eip712" ]]; then
@@ -206,6 +206,9 @@ if [[ "$FORMAT" == "safe-eip712" ]]; then
 elif [[ "$FORMAT" == "safe-service" ]]; then
   source "$NORMALIZE_DIR/readers.sh"
   reader_service
+elif [[ "$FORMAT" == "tx-builder-decoded" ]]; then
+  source "$NORMALIZE_DIR/readers.sh"
+  reader_decoded
 elif [[ -n "$PROFILE" ]]; then
   die "--profile is not supported for $FORMAT"
 fi
