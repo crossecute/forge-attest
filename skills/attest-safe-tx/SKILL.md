@@ -80,6 +80,15 @@ profile when its documented omissions apply. Do not use a downloaded service
 response as the producer artifact or infer a nonce. Both hash aliases are checked
 if present; see `docs/producer-readers.md`.
 
+For supported `safe-utils` scripts that submit through `solidity-http`'s bare
+curl POST over FFI, use `capture = "safe-utils"` on a run with a pinned RPC block.
+Keep the original producer script unchanged and claim each intercepted request
+with `input_format = "safe-service"`, `input_profile = "safe-utils"`, an explicit
+Safe and nonce, and reviewed hashes. `output_path` names the capture, not a file
+the producer must write. Use only public test keys for the producer's local
+signature. This transport adapter is not a network sandbox; review the actual
+HTTP/FFI code path and the limits in `README.md`. See `attest.capture.example.toml`.
+
 For decoded Transaction Builder entries, opt into `input_profile = "static-v1"`
 with `input_format = "tx-builder"` (or its `tx-builder-decoded` alias). Check that
 the descriptor uses only the supported address/bool/uint8/uint256 scalar types.
