@@ -27,6 +27,7 @@ contract ServiceReaderTest is ReaderTestBase {
     function test_RejectsResponseObjectsAndInvalidProfiles() external {
         string memory json = _read("safe-service.json");
         _reject(_replace(json, '"signature": "0x"', '"signature": "0x", "executionDate": "2026-11-05"'), "safe-service", "");
+        _reject(_replace(json, '"signature": "0x"', '"signature": "0x", "safeVersion": "1.3.0"'), "safe-service", "");
         _reject(json, "safe-service", "wrong");
         _reject(_replace(_read("safe-service-safe-utils.json"), '"safeTxGas": "0"', '"safeTxGas": "1"'), "safe-service", "safe-utils");
     }

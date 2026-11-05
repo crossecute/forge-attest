@@ -46,8 +46,15 @@ reader_service() {
   case "$PROFILE" in ""|safe|safe-utils) ;; *) die "unknown safe-service profile: $PROFILE" ;; esac
   jq_root -e '
     type == "object" and
-    ((keys - ["safe","chainId","safeVersion","to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce","sender","signature","origin","contractTransactionHash","safeTxHash"]) | length == 0)
+    ((keys - ["safe","chainId","to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce","sender","signature","origin","contractTransactionHash","safeTxHash"]) | length == 0)
   ' >/dev/null || die "not an exported Safe service request"
+  jq_root -e '
+    def scalar_uint: if type == "number" then . >= 0 and . <= 9007199254740991 and floor == .
+      elif type == "string" then test("^(0|[1-9][0-9]*)$") else false end;
+    (if has("chainId") then (.chainId | scalar_uint) else true end) and
+    (if has("contractTransactionHash") then (.contractTransactionHash | type == "string" and test("^0x[0-9a-fA-F]{64}$")) else true end) and
+    (if has("safeTxHash") then (.safeTxHash | type == "string" and test("^0x[0-9a-fA-F]{64}$")) else true end)
+  ' >/dev/null || die "invalid service chain or transaction hash"
   SERVICE_HASH=$(jget .contractTransactionHash)
   SERVICE_ALT_HASH=$(jget .safeTxHash)
   if [[ "$PROFILE" == safe-utils ]]; then

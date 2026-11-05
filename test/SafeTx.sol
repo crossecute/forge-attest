@@ -297,9 +297,14 @@ library SafeTxLib {
     }
 
     function requireKeys(string memory json, string memory at, string memory expected) internal pure {
+        allowKeys(json, at, expected);
+        require(vm.parseJsonKeys(json, at).length == vm.parseJsonStringArray(expected, "$").length,
+            "SafeTxLib: unexpected object keys");
+    }
+
+    function allowKeys(string memory json, string memory at, string memory expected) internal pure {
         string[] memory keys = vm.parseJsonKeys(json, at);
         string[] memory want = vm.parseJsonStringArray(expected, "$");
-        require(keys.length == want.length, "SafeTxLib: unexpected object keys");
         for (uint256 i = 0; i < keys.length; i++) {
             bool found;
             for (uint256 j = 0; j < want.length; j++) {
@@ -358,12 +363,12 @@ library SafeTxLib {
         require(bytes(json).length <= 1048576, "SafeTxLib: reader input exceeds 1 MiB");
         bool utils = _is(profile, "safe-utils");
         require(utils || bytes(profile).length == 0 || _is(profile, "safe"), "SafeTxLib: unknown service profile");
+        allowKeys(json, "$", '["safe","chainId","to","value","data","operation","safeTxGas","baseGas","gasPrice","gasToken","refundReceiver","nonce","sender","signature","origin","contractTransactionHash","safeTxHash"]');
         validateSignedFields(json, "");
         t.safe = vm.keyExistsJson(json, ".safe") ? vm.parseJsonAddress(json, ".safe") : b.safe;
         require(utils || vm.keyExistsJson(json, ".safe"), "SafeTxLib: service request missing safe");
         t.chainId = vm.keyExistsJson(json, ".chainId") ? strictUint(json, ".chainId") : b.chainId;
-        t.safeVersion = vm.keyExistsJson(json, ".safeVersion") ? vm.parseJsonString(json, ".safeVersion") :
-            (bytes(b.safeVersion).length == 0 ? "1.3.0" : b.safeVersion);
+        t.safeVersion = bytes(b.safeVersion).length == 0 ? "1.3.0" : b.safeVersion;
         t = readSignedCore(json, "", t);
         if (!utils || vm.keyExistsJson(json, ".gasToken")) t.gasToken = vm.parseJsonAddress(json, ".gasToken");
         if (!utils || vm.keyExistsJson(json, ".refundReceiver")) t.refundReceiver = vm.parseJsonAddress(json, ".refundReceiver");
@@ -372,8 +377,13 @@ library SafeTxLib {
         require(t.safe != address(0) && t.chainId != 0, "SafeTxLib: missing Safe or chain");
         require(b.safe == address(0) || b.safe == t.safe, "SafeTxLib: safe mismatch");
         require(b.chainId == 0 || b.chainId == t.chainId, "SafeTxLib: chain mismatch");
-        if (vm.keyExistsJson(json, ".contractTransactionHash")) {
-            require(vm.parseBytes32(vm.parseJsonString(json, ".contractTransactionHash")) == hash(t), "SafeTxLib: service hash mismatch");
+        string[2] memory aliases = [".contractTransactionHash", ".safeTxHash"];
+        for (uint256 i = 0; i < aliases.length; i++) {
+            if (!vm.keyExistsJson(json, aliases[i])) continue;
+            string memory carried = vm.parseJsonString(json, aliases[i]);
+            bytes memory raw = bytes(carried);
+            require(raw.length == 66 && raw[0] == "0" && raw[1] == "x", "SafeTxLib: malformed service hash");
+            require(vm.parseBytes32(carried) == hash(t), "SafeTxLib: service hash mismatch");
         }
     }
 
