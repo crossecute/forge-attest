@@ -5,6 +5,11 @@
 **Prove that a Gnosis Safe transaction is exactly the output of a specific Forge
 script, and was not changed on its way to the Safe.**
 
+`forge-attest` is a GitHub Action for CI/CD pipelines. Add it as a step in a
+workflow and the step fails unless every active check below passes (see
+[GitHub Action](#github-action)). The action wraps one
+script, `attest.sh`, which also runs locally (see [Usage](#usage)).
+
 An ops or treasury team builds a Safe transaction with a Forge script in one repo,
 then submits the resulting JSON to a Safe for signers to approve. That leaves a
 question no signer can answer: *is the thing in the Safe queue really what the
